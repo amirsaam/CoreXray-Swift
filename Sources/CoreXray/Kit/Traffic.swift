@@ -70,9 +70,9 @@ extension Xray {
     /// probing without metrics has no readable results.
     ///
     /// ```swift
-    /// options: .init(
+    /// Xray.shared.options(
     ///     metricsPort: 10085,
-    ///     observatory: .init(subjectSelector: ["fast", "ua:icast"])
+    ///     observatory: Xray.shared.observatory(subjectSelector: ["fast", "ua:icast"])
     /// )
     /// ```
     public struct Observatory: Sendable {
@@ -174,6 +174,21 @@ extension Xray {
             inbound.values.reduce(0) { $0 + $1.down } + outbound.values.reduce(0) { $0 + $1.down }
         }
 
+        /// Uplink/downlink counted on the outbound side only. The engine
+        /// counts every byte twice — once on the inbound it entered
+        /// through, once on the outbound it left through — so `totalUp` /
+        /// `totalDown` are 2x the bytes on the wire. Dashboard totals and
+        /// speeds want this side: for proxy mode it equals the bytes the
+        /// device exchanged with the network.
+        public var uplink: Int64 {
+            outbound.values.reduce(0) { $0 + $1.up }
+        }
+
+        /// Outbound-side downlink; see `uplink`.
+        public var downlink: Int64 {
+            outbound.values.reduce(0) { $0 + $1.down }
+        }
+
         /// Bytes moved between two snapshots, with per-second rates derived
         /// from the wall-clock gap between them.
         public func delta(since earlier: TrafficSnapshot) -> TrafficDelta {
@@ -203,7 +218,10 @@ extension Xray {
     }
 
     /// What moved during an interval: per-tag byte deltas with totals and
-    /// rates. `upPerSecond` over a one-second poll *is* the upload speed.
+    /// rates. `uplinkPerSecond` over a one-second poll *is* the upload
+    /// speed. Like the snapshot, `totalUp` / `totalDown` double-count
+    /// (inbound plus outbound); `uplink` / `downlink` count the outbound
+    /// side only and match the bytes on the wire.
     public struct TrafficDelta: Sendable {
         public var seconds: Double
         public var inbound: [String: TrafficCounter]
@@ -211,12 +229,32 @@ extension Xray {
         public var totalUp: Int64
         public var totalDown: Int64
 
+        /// Outbound-side bytes up over the interval; see `TrafficSnapshot.uplink`.
+        public var uplink: Int64 {
+            outbound.values.reduce(0) { $0 + $1.up }
+        }
+
+        /// Outbound-side bytes down over the interval.
+        public var downlink: Int64 {
+            outbound.values.reduce(0) { $0 + $1.down }
+        }
+
         public var upPerSecond: Double {
             seconds > 0 ? Double(totalUp) / seconds : 0
         }
 
         public var downPerSecond: Double {
             seconds > 0 ? Double(totalDown) / seconds : 0
+        }
+
+        /// Outbound-side upload speed; prefer this for dashboards.
+        public var uplinkPerSecond: Double {
+            seconds > 0 ? Double(uplink) / seconds : 0
+        }
+
+        /// Outbound-side download speed; prefer this for dashboards.
+        public var downlinkPerSecond: Double {
+            seconds > 0 ? Double(downlink) / seconds : 0
         }
     }
 
@@ -230,8 +268,8 @@ extension Xray {
     /// while session alive {
     ///     try await Task.sleep(for: .seconds(1))
     ///     let now = try await monitor.snapshot()
-    ///     let speed = now.delta(since: previous) // upPerSecond / downPerSecond
-    ///     totals.up += speed.totalUp
+    ///     let speed = now.delta(since: previous) // uplinkPerSecond / downlinkPerSecond
+    ///     totals.up += speed.uplink
     ///     previous = now
     /// }
     /// ```
@@ -301,7 +339,13 @@ extension Xray {
         private let interval: Duration
         private let stalledAfter: Duration
         private let onStall: @Sendable () -> Void
+        private let lock = NSLock()
         private var task: Task<Void, Never>?
+        /// Which `start` owns the current loop. `stop` cancels the task but
+        /// cannot join it, so an old loop may still be between its checks
+        /// when a new one begins — the epoch lets the loser stand down
+        /// instead of double-polling and double-firing.
+        private var epoch: Int = 0
 
         internal init(
             port: Int,
@@ -323,25 +367,36 @@ extension Xray {
             task?.cancel()
         }
 
-        /// Begins polling. Restartable: starting again stops the old loop.
+        /// Begins polling. Restartable: starting again stops the old loop,
+        /// and the old loop exits at its next check via the epoch — the two
+        /// never poll or fire together.
         public func start() {
-            stop()
-            task = Task { [weak self] in await self?.run() }
+            lock.withLock {
+                task?.cancel()
+                epoch += 1
+                let current = epoch
+                task = Task { [weak self] in await self?.run(epoch: current) }
+            }
         }
 
-        /// Stops polling. Safe when idle.
+        /// Stops polling. Safe when idle. The in-flight loop exits at its
+        /// next cancellation check.
         public func stop() {
-            task?.cancel()
-            task = nil
+            lock.withLock {
+                task?.cancel()
+                task = nil
+                epoch += 1
+            }
         }
 
-        private func run() async {
+        private func run(epoch: Int) async {
+            func current() -> Bool { lock.withLock { epoch == self.epoch } }
             var last = try? await monitor.snapshot()
             var lastAdvance = ContinuousClock.now
             var fired = false
-            while !Task.isCancelled {
+            while !Task.isCancelled, current() {
                 try? await Task.sleep(for: interval)
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, current() else { return }
                 // A failed snapshot counts the same as a stale one: the
                 // endpoint answering nothing is the stall, whether the
                 // engine died or only its listener did. No baseline, slow

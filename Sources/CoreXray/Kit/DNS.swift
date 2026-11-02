@@ -9,7 +9,7 @@ extension Xray {
     /// in the document.
     ///
     /// ```swift
-    /// Xray.DNS(
+    /// Xray.shared.dns(
     ///     hosts: ["geosite:malware": "127.0.0.1"],
     ///     queryStrategy: .useIPv4,
     ///     servers: [

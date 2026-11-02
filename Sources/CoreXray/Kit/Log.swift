@@ -7,7 +7,7 @@ extension Xray {
     /// A `log` section, written verbatim.
     ///
     /// ```swift
-    /// Xray.Log(level: .warning, dnsLog: true)
+    /// Xray.shared.log(level: .warning, dnsLog: true)
     /// ```
     public struct Log: Sendable {
         public enum Level: String, Sendable {

@@ -14,8 +14,8 @@ extension Xray {
     /// different threads is a logic race this type does not referee.
     ///
     /// ```swift
-    /// let session = Xray.Session(logger: { print("[xray]", $0) })
-    /// try session.start(.shareLinks(pastedText), options: .init(
+    /// let session = Xray.shared.newSession(logger: { print("[xray]", $0) })
+    /// try session.start(.shareLinks(pastedText), options: Xray.shared.options(
     ///     sniffing: Xray.shared.sniffing(),
     ///     transform: { $0["log"] = ["loglevel": "warning"] }
     /// ))
@@ -33,11 +33,30 @@ extension Xray {
         private var _connectedSince: Date?
         private var _accessLogPath: String?
         private var _errorLogPath: String?
+        /// Launch epoch: every start attempt and every stop bumps it, so a
+        /// timed-out start's compensating stop can tell a stale timeout
+        /// from the current instance and never kill a newer launch.
+        private var _generation: Int = 0
         private static let stamp = ISO8601DateFormatter()
 
         /// Transport for feed fetches. `URLSession.shared` in production;
-        /// tests swap in a stubbed configuration. Set before use.
-        internal var urlSession: URLSession = .shared
+        /// tests swap in a stubbed configuration. Set once before the first
+        /// fetch — access is lock-guarded, but swapping it mid-fetch races
+        /// the in-flight request, so treat it as set-once configuration.
+        internal var urlSession: URLSession {
+            get { stateLock.withLock { _urlSession } }
+            set { stateLock.withLock { _urlSession = newValue } }
+        }
+        private var _urlSession: URLSession = .shared
+
+        /// Test seam for the deadline start: replaces the bridge launch so
+        /// the timeout path is deterministic (a hanging closure plus a
+        /// short deadline). Same set-once discipline as `urlSession`.
+        internal var launchOverride: (@Sendable (String) throws -> Void)? {
+            get { stateLock.withLock { _launchOverride } }
+            set { stateLock.withLock { _launchOverride = newValue } }
+        }
+        private var _launchOverride: (@Sendable (String) throws -> Void)?
 
         /// Receives lifecycle notes: what is launching, the byte count of the
         /// final JSON, engine answers. Set at init or any time after. Every
@@ -173,10 +192,10 @@ extension Xray {
         /// is nothing to cast:
         ///
         /// ```swift
-        /// try session.build(.shareLinks(text), options: .init(
-        ///     routing: Xray.Routing(
-        ///         rules: [.init(domains: ["googleadservices.com"],
-        ///                        destination: .proxy)],
+        /// try session.build(.shareLinks(text), options: Xray.shared.options(
+        ///     routing: Xray.shared.routing(
+        ///         rules: [Xray.shared.routingRule(domains: ["googleadservices.com"],
+        ///                                        destination: .proxy)],
         ///         final: .direct
         ///     )
         /// ))
@@ -262,6 +281,7 @@ extension Xray {
                 }
                 dict["routing"] = .object(routing.wireObject(proxyTag: proxyTag))
             }
+            Self.ensureDNSRelayRoute(in: &dict)
             try Self.applyCredentials(options.credentials, to: &dict)
             options.transform?(&dict)
             Self.ensureStandardOutbounds(in: &dict)
@@ -287,9 +307,17 @@ extension Xray {
 
         /// Launches an assembled configuration. Blocks until the engine is
         /// up, so prefer a background task (or the async variant) from UI code.
-        /// Starting again while an instance runs replaces it.
+        /// Starting again while an instance runs replaces it: a live
+        /// instance is stopped first, so the launch never fails with an
+        /// already-running refusal. Log paths are read from the document,
+        /// so engine-file tailing works here exactly like for built starts.
         public func start(_ config: Config) throws {
+            try replaceRunningInstance()
             log("launching engine (\(config.json.count) bytes of configuration)")
+            if let decoded = try? JSONDecoder().decode(JSONValue.self, from: Data(config.json.utf8)),
+               case .object(let dict) = decoded {
+                recordLogPaths(from: dict)
+            }
             try LifecycleCalls.launch(config.json)
             markLaunched()
             log("engine launched")
@@ -299,7 +327,9 @@ extension Xray {
         /// no transform. For fully pre-built configs you control end to end.
         /// The log section's file paths are still recorded, so
         /// `recentEngineLogs` works the same as for built documents.
+        /// Starting again replaces a running instance first.
         public func start(rawJSON json: String) throws {
+            try replaceRunningInstance()
             log("launching engine from raw JSON (\(json.count) bytes)")
             if let decoded = try? JSONDecoder().decode(JSONValue.self, from: Data(json.utf8)),
                case .object(let dict) = decoded {
@@ -322,7 +352,9 @@ extension Xray {
         }
 
         /// Assembles with `options` and validates the result, so you check
-        /// exactly what would launch.
+        /// exactly what would launch. The check runs inside the engine, so
+        /// it needs the engine stopped — while running, validate the
+        /// structure offline with `Config.validateOffline()` instead.
         public func validate(
             _ source: Config.Source,
             options: Options? = nil
@@ -331,8 +363,11 @@ extension Xray {
         }
 
         /// Stops this process's running engine instance. Safe when idle: the
-        /// engine still answers with success.
+        /// engine still answers with success. The stop invalidates any
+        /// timed-out start still settling in the background, so its
+        /// compensating cleanup stands down instead of racing you.
         public func stop() throws {
+            _ = nextGeneration()
             log("stopping engine")
             try LifecycleCalls.stop()
             markStopped()
@@ -345,16 +380,48 @@ extension Xray {
             return try LifecycleCalls.isRunning()
         }
 
+        /// Bumps the launch epoch and returns the new value. Every start
+        /// attempt calls this before launching; `stop` calls it too, so a
+        /// pending compensating stop from an older attempt stands down.
+        private func nextGeneration() -> Int {
+            stateLock.withLock {
+                _generation += 1
+                return _generation
+            }
+        }
+
+        /// Stops the instance left behind by a timed-out start, but only
+        /// when nothing newer began since: a follow-up start or stop bumps
+        /// the epoch, and a stale timeout must never kill the current
+        /// instance. Best effort — errors are swallowed, success is logged.
+        private func stopIfCurrent(generation: Int) {
+            let current = stateLock.withLock { _generation == generation }
+            guard current else { return }
+            try? stop()
+        }
+
+        /// Every start replaces: the engine holds one instance per process
+        /// and launching over a live one throws, so a running instance is
+        /// stopped first. Safe to call idle — the stop is skipped when
+        /// nothing runs.
+        private func replaceRunningInstance() throws {
+            if (try? LifecycleCalls.isRunning()) == true {
+                try stop()
+            }
+        }
+
         // MARK: - Async conveniences
 
         /// Assembles off the calling thread with `options`, then launches
         /// without blocking it. Logging still runs on the caller's executor
-        /// around the handoff.
+        /// around the handoff. Starting again replaces a running instance
+        /// first, like the sync variant.
         public func start(
             _ source: Config.Source,
             options: Options? = nil
         ) async throws {
             let config = try build(source, options: options)
+            try replaceRunningInstance()
             log("launching engine (\(config.json.count) bytes of configuration)")
             let json = config.json
             try await Task.detached { try LifecycleCalls.launch(json) }.value
@@ -367,31 +434,61 @@ extension Xray {
         /// instance before throwing. Use from providers, where the system
         /// kills a start that overstays its time budget — a thrown error is
         /// recoverable, a watchdog kill is not.
+        ///
+        /// The launch runs detached so the timeout can truly abandon it: a
+        /// child task would pin the group until the engine answered, which
+        /// is exactly what the deadline refuses to wait for. If the
+        /// deadline wins, the orphaned launch is left to settle and then
+        /// stopped in the background — but only when nothing newer began
+        /// since, so a follow-up start is never killed by a stale timeout.
+        /// `connectedSince` is stamped only when the launch itself
+        /// succeeded, never on the timeout path.
         public func start(
             _ source: Config.Source,
             options: Options? = nil,
             deadline: Duration
         ) async throws {
             let config = try build(source, options: options)
+            try replaceRunningInstance()
+            // Captured after the replace-stop above: any stop or start
+            // from here on invalidates this attempt's cleanup.
+            let generation = nextGeneration()
             log("launching engine (\(config.json.count) bytes of configuration)")
             let json = config.json
-            try await withThrowingTaskGroup(of: Void.self) { group in
-                group.addTask {
-                    try await Task.sleep(for: deadline)
-                    throw Error.invalidInput(
-                        "engine start exceeded its deadline and was stopped; check geo assets and listener ports"
-                    )
+            let override = launchOverride
+            let launchTask = Task.detached {
+                if let override {
+                    try override(json)
+                } else {
+                    try LifecycleCalls.launch(json)
                 }
-                group.addTask {
-                    try await Task.detached { try LifecycleCalls.launch(json) }.value
-                }
-                do {
+            }
+            do {
+                try await withThrowingTaskGroup(of: Void.self) { group in
+                    group.addTask {
+                        try await Task.sleep(for: deadline)
+                        throw Error.timedOut(
+                            "engine start exceeded its deadline and was stopped; check geo assets and listener ports"
+                        )
+                    }
+                    group.addTask {
+                        try await launchTask.value
+                    }
                     try await group.next()
                     group.cancelAll()
-                } catch {
-                    try? self.stop()
-                    throw error
                 }
+            } catch {
+                // Stopped-engine or wedged-bridge failures come from the
+                // launch itself as `Xray.Error` — nothing is running, so
+                // there is nothing to clean up. Anything else (the timeout
+                // above, or cancellation) may leave a live orphan behind.
+                if error as? Error == nil {
+                    Task.detached { [weak self] in
+                        _ = try? await launchTask.value
+                        self?.stopIfCurrent(generation: generation)
+                    }
+                }
+                throw error
             }
             markLaunched()
             log("engine launched")
@@ -399,7 +496,9 @@ extension Xray {
 
         /// Assembles on the caller, then validates the result without
         /// blocking it. Only the engine check runs detached, so the
-        /// non-Sendable transform never crosses threads.
+        /// non-Sendable transform never crosses threads. Like the sync
+        /// variant this needs the engine stopped; use
+        /// `Config.validateOffline()` while running.
         public func validate(
             _ source: Config.Source,
             options: Options? = nil
@@ -411,11 +510,12 @@ extension Xray {
 
         /// Provider sanity check over an assembled document: every inbound
         /// must listen on loopback (an extension cannot bind public
-        /// addresses) and a `tun` inbound must exist (a packet tunnel with
-        /// nothing to pump packets through launches a proxy, not a tunnel).
-        /// Throws one `.invalidInput` listing every problem found, so a
-        /// single run surfaces the whole list. Runs `build` first, so the
-        /// geo gate and every other assembly rule apply. For UI, prefer
+        /// addresses) and carry an explicit `listen`, a `tun` inbound must
+        /// exist and carry its file descriptor (a tunnel with nothing to
+        /// pump packets through launches a proxy, not a tunnel). Throws one
+        /// `.invalidInput` listing every problem found, so a single run
+        /// surfaces the whole list. Runs `build` first, so the geo gate and
+        /// every other assembly rule apply. For UI, prefer
         /// `preflightIssues`, which returns the same problems as values.
         public func preflightForProvider(
             _ source: Config.Source,
@@ -441,20 +541,38 @@ extension Xray {
             }
             var problems: [String] = []
             var sawTun = false
+            var sawTunFD = false
             if case .array(let inbounds) = object["inbounds"] {
                 for inbound in inbounds {
                     guard let entry = inbound.objectValue else { continue }
-                    if entry["protocol"]?.stringValue == "tun" { sawTun = true }
-                    if let listen = entry["listen"]?.stringValue,
-                       !["127.0.0.1", "localhost", "::1"].contains(listen) {
+                    let tag = entry["tag"]?.stringValue ?? "?"
+                    if entry["protocol"]?.stringValue == "tun" {
+                        sawTun = true
+                        // The descriptor travels through the document env
+                        // (see `TunEntry`); without it the engine has no
+                        // interface to read packets from.
+                        if let env = object["env"]?.objectValue,
+                           env["xray.tun.fd"] != nil || env["XRAY_TUN_FD"] != nil {
+                            sawTunFD = true
+                        }
+                    }
+                    guard let listen = entry["listen"]?.stringValue else {
                         problems.append(
-                            "inbound '\(entry["tag"]?.stringValue ?? "?")' listens on \(listen): extensions can only bind loopback"
+                            "inbound '\(tag)' sets no listen address: set it to 127.0.0.1 explicitly instead of relying on the engine default"
+                        )
+                        continue
+                    }
+                    if !["127.0.0.1", "localhost", "::1"].contains(listen) {
+                        problems.append(
+                            "inbound '\(tag)' listens on \(listen): extensions can only bind loopback"
                         )
                     }
                 }
             }
             if !sawTun {
                 problems.append("no tun inbound: a packet tunnel with nothing to pump packets through launches a proxy, not a tunnel")
+            } else if !sawTunFD {
+                problems.append("the tun inbound has no file descriptor: hand one over through Options.environment (xray.tun.fd)")
             }
             return problems
         }
@@ -470,9 +588,12 @@ extension Xray {
         /// under `deadline` like `start(_:options:deadline:)`. Feeds are capped
         /// at the engine's own request limit (`timeoutSeconds` bounds the
         /// wait): a declared or actual body past it throws before anything
-        /// is decoded, so a hostile feed can't park memory. Note the scan
-        /// build runs `transform` twice when assets are topped up — keep
-        /// transforms idempotent.
+        /// is decoded, so a hostile feed can't park memory. The top-up scans
+        /// the feed text and the typed options without running `transform`,
+        /// so the launch assembles exactly once — references a transform
+        /// would inject are still caught by the launch-time gate instead.
+        /// Keep transforms idempotent regardless: assembly may run them in
+        /// other paths.
         public func start(
             remoteSubscription url: URL,
             ageSecret: String? = nil,
@@ -519,15 +640,68 @@ extension Xray {
                     env["xray.location.asset"] = assetDirectory.path
                 }
                 resolved.environment = env
-                var scan = resolved
-                scan.geoCheck = false
-                let scanned = try build(.shareLinks(unwrapped), options: scan)
-                _ = try await Xray.shared.ensureAssets(for: scanned, in: assetDirectory)
+                // Top up without assembling twice: scan the feed text plus
+                // the typed options for geo references (no conversion, no
+                // transform, no gate), fetch what is missing, then run the
+                // single real build with the gate on.
+                let needed = Self.referencedDatabases(sourceText: unwrapped, options: resolved)
+                if !needed.isEmpty {
+                    _ = try await Xray.shared.ensureAssets(for: nil, databases: needed, in: assetDirectory)
+                }
             }
             try await start(.shareLinks(unwrapped), options: resolved, deadline: deadline)
         }
 
         // MARK: - Private
+
+        /// Geo databases a launch will need, read from the feed text plus
+        /// the typed options — without converting, transforming, or gating,
+        /// so the remote start assembles exactly once. A JSON feed is
+        /// scanned for `geosite:`/`geoip:` references in its routing and
+        /// dns sections; a raw link feed converts to outbounds, which carry
+        /// no references, so only the options matter there. References a
+        /// `transform` would inject are not visible here: they are still
+        /// caught by the launch-time gate, which refuses to run without
+        /// them — keep transforms out of the asset path, or pre-fetch
+        /// those databases yourself.
+        private static func referencedDatabases(sourceText: String, options: Options) -> [GeoDatabase] {
+            var names: Set<String> = []
+            if let data = sourceText.data(using: .utf8),
+               let decoded = try? JSONDecoder().decode(JSONValue.self, from: data),
+               case .object(let dict) = decoded {
+                for database in Xray.GeoAssets.referenced(in: dict) {
+                    names.insert(database.rawValue)
+                }
+            }
+            if let routing = options.routing {
+                for rule in routing.rules {
+                    for text in rule.domains + rule.ips {
+                        if let name = databaseName(in: text) { names.insert(name) }
+                    }
+                }
+            }
+            if let dns = options.dns {
+                for key in dns.hosts.keys {
+                    if let name = databaseName(in: key) { names.insert(name) }
+                }
+                for server in dns.servers {
+                    if case .detailed(_, let domains) = server {
+                        for domain in domains {
+                            if let name = databaseName(in: domain) { names.insert(name) }
+                        }
+                    }
+                }
+            }
+            return names.compactMap(GeoDatabase.init)
+        }
+
+        /// The database name in a string like `"geosite:category-ads"`.
+        private static func databaseName(in text: String) -> String? {
+            for database in ["geosite", "geoip"] where text.hasPrefix("\(database):") {
+                return database
+            }
+            return nil
+        }
 
         /// Fail-fast geo database check over the final, post-transform
         /// document: what the routing and dns sections reference must exist
@@ -598,8 +772,10 @@ extension Xray {
         }
 
         /// Appends the standard `direct` (freedom), `block` (blackhole), and
-        /// `dns-out` (dns) outbounds when the routing section references
-        /// them but the document does not define them.
+        /// `dns-out` (dns) outbounds when the routing rules reference
+        /// them but the document does not define them. A `final`
+        /// destination arrives as a trailing match-all rule, so it is
+        /// covered by the same scan — no special case.
         private static func ensureStandardOutbounds(in config: inout JSONObject) {
             guard case .object(let routing) = config["routing"],
                   case .array(let rules) = routing["rules"] else { return }
@@ -609,9 +785,6 @@ extension Xray {
                    case .string(let tag) = entry["outboundTag"] {
                     referenced.insert(tag)
                 }
-            }
-            if case .string(let final) = routing["final"] {
-                referenced.insert(final)
             }
             let standards = [("direct", "freedom"), ("block", "blackhole"), ("dns-out", "dns")]
             var outbounds = config["outbounds"]?.arrayValue ?? []
@@ -627,6 +800,48 @@ extension Xray {
             }
             if outbounds.count != before {
                 config["outbounds"] = .array(outbounds)
+            }
+        }
+
+        /// Routes a `dokodemo-door` DNS relay inbound at the engine's own
+        /// `dns` section: without an `inboundTag` → `dns-out` rule the
+        /// relay's queries fall through to `final` (or the proxy) instead
+        /// of the local resolver. Appends the rule when no rule already
+        /// claims the relay tag, and creates the routing section when the
+        /// document has none — `transform` still runs after, so an explicit
+        /// route for the tag always wins over this default.
+        private static func ensureDNSRelayRoute(in config: inout JSONObject) {
+            guard config["dns"] != nil,
+                  case .array(let inbounds) = config["inbounds"] else { return }
+            let relayTags = inbounds.compactMap { inbound -> String? in
+                guard case .object(let entry) = inbound,
+                      entry["protocol"]?.stringValue == "dokodemo-door",
+                      case .string(let tag) = entry["tag"] else { return nil }
+                return tag
+            }
+            guard !relayTags.isEmpty else { return }
+            var routing = config["routing"]?.objectValue ?? [:]
+            var rules = routing["rules"]?.arrayValue ?? []
+            let covered = rules.contains { rule in
+                guard case .object(let entry) = rule else { return false }
+                let claimed: [String]
+                if case .array(let tags) = entry["inboundTag"] {
+                    claimed = tags.compactMap(\.stringValue)
+                } else if case .string(let tag) = entry["inboundTag"] {
+                    claimed = [tag]
+                } else {
+                    return false
+                }
+                return claimed.contains { relayTags.contains($0) }
+            }
+            if !covered {
+                rules.append(.object([
+                    "type": .string("field"),
+                    "inboundTag": .array(relayTags.map(JSONValue.string)),
+                    "outboundTag": .string("dns-out"),
+                ]))
+                routing["rules"] = .array(rules)
+                config["routing"] = .object(routing)
             }
         }
 
@@ -714,11 +929,12 @@ extension Xray {
             stateLock.withLock { _connectedSince = Date() }
         }
 
+        // Clears launch side effects on stop. The log file paths survive:
+        // the files are still on disk, so `recentEngineLogs` keeps
+        // tailing the last run until the next start overwrites them.
         private func markStopped() {
             stateLock.withLock {
                 _connectedSince = nil
-                _accessLogPath = nil
-                _errorLogPath = nil
             }
         }
     }

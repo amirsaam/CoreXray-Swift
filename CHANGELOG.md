@@ -5,7 +5,7 @@ The package follows clean-break versioning: no deprecation shims, no
 recompile against the new shape. Pin releases with `.exact()` (see README).
 
 Newest first. This log starts with the current batch; earlier history is the
-git log and the `v<date>` release tags.
+git log and the `<date>` release tags (bare version; the release itself is named `v<date>`).
 
 ## Unreleased
 

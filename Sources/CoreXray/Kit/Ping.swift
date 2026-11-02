@@ -70,7 +70,11 @@ extension Xray {
         /// timeout.
         public let succeeded: Bool
 
-        /// Milliseconds from request start to completion.
+        /// Milliseconds from request start to completion. Zero when the
+        /// request failed: the engine reports its own sentinels (10000 for
+        /// timeouts, 11000 for routing failures) in `delay`, which are
+        /// engine internals, not measurements — so they are normalized
+        /// away here and the reason stays in `failureReason`.
         public let latencyMilliseconds: Int
 
         /// The engine's failure reason when `succeeded` is false.
@@ -80,6 +84,15 @@ extension Xray {
             case succeeded = "success"
             case latencyMilliseconds = "delay"
             case failureReason = "error"
+        }
+
+        public init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            let succeeded = try container.decode(Bool.self, forKey: .succeeded)
+            let delay = try container.decode(Int.self, forKey: .latencyMilliseconds)
+            self.succeeded = succeeded
+            self.latencyMilliseconds = succeeded ? delay : 0
+            self.failureReason = try container.decodeIfPresent(String.self, forKey: .failureReason)
         }
     }
 

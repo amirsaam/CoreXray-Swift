@@ -43,13 +43,15 @@ extension Xray {
     /// order and strategy are exactly what you declare.
     ///
     /// ```swift
-    /// Xray.Routing(
+    /// Xray.shared.routing(
     ///     domainStrategy: .ipIfNonMatch,
     ///     rules: [
-    ///         .init(domains: ["geosite:ads", "full:tracker.example.com"],
-    ///               destination: .proxy),
-    ///         .init(ips: ["geoip:private", "192.168.0.0/16"],
-    ///               destination: .direct),
+    ///         Xray.shared.routingRule(
+    ///             domains: ["geosite:ads", "full:tracker.example.com"],
+    ///             destination: .proxy),
+    ///         Xray.shared.routingRule(
+    ///             ips: ["geoip:private", "192.168.0.0/16"],
+    ///             destination: .direct),
     ///     ],
     ///     final: .proxy
     /// )
@@ -141,7 +143,12 @@ extension Xray {
 
         public var domainStrategy: DomainStrategy?
         public var rules: [Rule]
-        /// Where traffic no rule matched goes.
+        /// Where traffic no rule matched goes. The engine has no `final`
+        /// field, so this is written as a trailing `network: "tcp,udp"`
+        /// rule — every connection the engine routes is TCP or UDP, so it
+        /// catches the leftovers exactly where `final` promises. (A truly
+        /// condition-less rule is rejected by the engine as having no
+        /// effective fields, hence the network condition.)
         public var final: Destination?
 
         internal init(
@@ -154,7 +161,7 @@ extension Xray {
             self.final = final
         }
 
-        /// True when any rule or `final` sends traffic to the converted proxy.
+        /// True when any rule sends traffic to the converted proxy.
         var needsProxy: Bool {
             rules.contains(where: { $0.needsProxy })
                 || final.map {
@@ -164,12 +171,18 @@ extension Xray {
         }
 
         func wireObject(proxyTag: String) -> JSONObject {
+            var rules = self.rules
+            if let final {
+                // No `final` on the wire: a trailing `network: "tcp,udp"`
+                // field rule catches the leftovers exactly where `final`
+                // promises. The network condition is load-bearing — the
+                // engine rejects a condition-less rule ("no effective
+                // fields") — and it matches everything the engine routes.
+                rules.append(Rule(network: "tcp,udp", destination: final))
+            }
             var section: JSONObject = ["rules": .array(rules.map { .object($0.wireObject(proxyTag: proxyTag)) })]
             if let domainStrategy {
                 section["domainStrategy"] = .string(domainStrategy.rawValue)
-            }
-            if let final {
-                section["final"] = .string(final.tag(proxyTag: proxyTag))
             }
             return section
         }

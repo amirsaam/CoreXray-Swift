@@ -74,8 +74,16 @@ extension Xray {
         public var geoSiteURL: URL
 
         /// Transport for downloads. `URLSession.shared` in production;
-        /// tests swap in a stubbed configuration. Set before use.
-        internal var urlSession: URLSession = .shared
+        /// tests swap in a stubbed configuration. Set once before the first
+        /// download — access is lock-guarded, but swapping it mid-download
+        /// races the in-flight request, so treat it as set-once
+        /// configuration.
+        internal var urlSession: URLSession {
+            get { sessionLock.withLock { _urlSession } }
+            set { sessionLock.withLock { _urlSession = newValue } }
+        }
+        private var _urlSession: URLSession = .shared
+        private let sessionLock = NSLock()
 
         internal init(
             geoIPURL: URL? = nil,
@@ -236,22 +244,31 @@ extension Xray {
     /// Plain domains and IPs never require a database; the check exists only
     /// for references like `geosite:category-ads` or `geoip:private`.
     public enum GeoAssets: Sendable {
-        /// Directory lookup, in the order the engine itself uses: the
-        /// document's `env` at `xray.location.asset`, then the process
-        /// environment under either spelling, then the executable's
-        /// directory. Returns nothing when none of the three apply — lookup
-        /// locations are reported in the thrown error instead.
+        /// Directory lookup, in the engine's own order: the document's
+        /// `env` (both the dotted `xray.location.asset` and the
+        /// underscore `XRAY_LOCATION_ASSET` spellings), then the process
+        /// environment under both spellings, then the shared install
+        /// locations (`/usr/local/share/xray`, `/usr/local/etc/xray`),
+        /// then the executable's directory. Returns nothing when none of
+        /// the sources apply — lookup locations are reported in the
+        /// thrown error instead.
         static func candidateDirectories(env: JSONObject?) -> [String] {
             var directories: [String] = []
-            if let asset = env?["xray.location.asset"]?.stringValue, !asset.isEmpty {
-                directories.append(asset)
+            // The engine honors both spellings everywhere, document env
+            // included — dotted first, matching its precedence.
+            for key in ["xray.location.asset", "XRAY_LOCATION_ASSET"] {
+                if let asset = env?[key]?.stringValue, !asset.isEmpty, !directories.contains(asset) {
+                    directories.append(asset)
+                }
             }
-            // Both spellings, since the engine normalizes dotted names.
             for key in ["xray.location.asset", "XRAY_LOCATION_ASSET"] {
                 let value = getenv(key).map { String(cString: $0) }
                 if let value, !value.isEmpty, !directories.contains(value) {
                     directories.append(value)
                 }
+            }
+            for fixed in ["/usr/local/share/xray", "/usr/local/etc/xray"] where !directories.contains(fixed) {
+                directories.append(fixed)
             }
             if let executable = Bundle.main.executableURL?.deletingLastPathComponent().path,
                !executable.isEmpty, !directories.contains(executable) {

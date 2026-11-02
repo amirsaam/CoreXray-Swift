@@ -3,8 +3,9 @@ name: Update engine
 # Runs at midnight UTC every day. When XTLS/libXray publishes a release this
 # repo has not packaged yet, the job hashes upstream's libxray-apple-cgo.zip
 # asset, rewrites the url and checksum lines in Package.swift to that release,
-# commits, pushes tag v<version> (26.10.29 / 26.10.30 / ...), and publishes a
-# matching GitHub release. Consumers resolving the new tag make SwiftPM fetch
+# commits, pushes tag <version> (26.10.31 / ... — bare, no v prefix; the
+# release itself is still named v<version>), and publishes a matching GitHub
+# release. Consumers resolving the new tag make SwiftPM fetch
 # the asset straight from XTLS/libXray and cache it by checksum; this repo
 # stores no binaries.
 on:
@@ -26,6 +27,8 @@ jobs:
     outputs:
       version: ${{ steps.check.outputs.version }}
       changed: ${{ steps.check.outputs.changed }}
+      sha: ${{ steps.commit.outputs.sha }}
+      checksum: ${{ steps.asset.outputs.checksum }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -45,8 +48,8 @@ jobs:
           echo "XTLS/libXray latest: $tag"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
-          if git tag --list | grep -qx "v$version"; then
-            echo "Tag v$version already exists here, nothing to do."
+          if git tag --list | grep -qx "$version"; then
+            echo "Tag $version already exists here, nothing to do."
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
@@ -78,7 +81,8 @@ jobs:
           set -euo pipefail
           python3 scripts/update_package.py --version "$VERSION" --checksum "$CHECKSUM"
 
-      - name: Commit, tag, and publish the release
+      - name: Commit and push the new manifest
+        id: commit
         if: steps.check.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -91,30 +95,15 @@ jobs:
           if git diff --quiet -- Package.swift && git diff --cached --quiet -- Package.swift; then
             # The manifest already names this release (first run, or a
             # retrigger after a partial failure). Tagging still goes ahead.
-            echo "Package.swift already targets v${VERSION}; no manifest commit needed."
+            echo "Package.swift already targets ${VERSION}; no manifest commit needed."
           else
             git add Package.swift
-            git commit -m "v${VERSION}: package XTLS/libXray v${VERSION}"
+            git commit -m "${VERSION}: package XTLS/libXray v${VERSION}"
             git push origin HEAD
           fi
-          git tag "v${VERSION}" 2>/dev/null || echo "Tag v${VERSION} already exists locally."
-          git push origin "v${VERSION}"
-          if gh release view "v${VERSION}" >/dev/null 2>&1; then
-            echo "Release v${VERSION} already exists; leaving it alone."
-          else
-            gh release create "v${VERSION}" \
-            --title "CoreXray-Swift v${VERSION}" \
-            --target "$(git rev-parse HEAD)" \
-            --notes "Swift packaging of upstream [XTLS/libXray v${VERSION}](https://github.com/XTLS/libXray/releases/tag/v${VERSION}).
-
-            What this is: the CoreXray Swift module over libXray's C bridge — typed sessions, configs, routing/DNS/TUN sections, geo assets, traffic, and ping — plus the LibXray.xcframework it runs against.
-
-            How the binary gets here: \`Package.swift\` in this tag points at upstream's \`libxray-apple-cgo.zip\` (SHA-256: ${CHECKSUM}). SwiftPM downloads that asset, verifies it against the checksum, unpacks LibXray.xcframework, and caches it, so the framework itself is never stored in this repo.
-
-            Use it with an exact pin — tags mirror upstream versions and there are no deprecation shims between them:
-
-                .package(url: \"https://github.com/amirsaam/CoreXray-Swift.git\", .exact(\"${VERSION}\"))"
-          fi
+          # Tagging and the release wait for the verify job below: a red
+          # suite must never get a tag. The sha travels via job outputs.
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
   verify:
     name: Swift build check
@@ -124,6 +113,47 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: "v${{ needs.update.outputs.version }}"
+          ref: ${{ needs.update.outputs.sha }}
       - name: Build and test the package as a consumer would
         run: swift test
+
+  publish:
+    name: Tag and publish the release
+    needs: [update, verify]
+    # Tagging happens only after the suite passed on the exact commit the
+    # tag will point at — a red suite never gets a tag or a release.
+    if: needs.update.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.update.outputs.sha }}
+          fetch-tags: true
+      - name: Tag and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.update.outputs.version }}
+          SHA: ${{ needs.update.outputs.sha }}
+          CHECKSUM: ${{ needs.update.outputs.checksum }}
+        run: |
+          set -euo pipefail
+          git config user.name "corexray-updater"
+          git config user.email "actions@users.noreply.github.com"
+          git tag "${VERSION}" 2>/dev/null || echo "Tag ${VERSION} already exists locally."
+          git push origin "${VERSION}"
+          if gh release view "${VERSION}" >/dev/null 2>&1; then
+            echo "Release v${VERSION} already exists; leaving it alone."
+          else
+            gh release create "${VERSION}" \
+            --title "v${VERSION}" \
+            --target "$SHA" \
+            --notes "Swift packaging of upstream [XTLS/libXray v${VERSION}](https://github.com/XTLS/libXray/releases/tag/v${VERSION}).
+
+            What this is: the CoreXray Swift module over libXray's C bridge — typed sessions, configs, routing/DNS/TUN sections, geo assets, traffic, and ping — plus the LibXray.xcframework it runs against.
+
+            How the binary gets here: \`Package.swift\` in this tag points at upstream's \`libxray-apple-cgo.zip\`. SwiftPM downloads that asset, verifies it against the checksum, unpacks LibXray.xcframework, and caches it, so the framework itself is never stored in this repo.
+
+            Use it with an exact pin — tags mirror upstream versions and there are no deprecation shims between them:
+
+                .package(url: \"https://github.com/amirsaam/CoreXray-Swift.git\", .exact(\"${VERSION}\"))"
+          fi

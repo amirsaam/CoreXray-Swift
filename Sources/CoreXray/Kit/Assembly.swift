@@ -40,8 +40,9 @@ extension Xray {
             public var udp: Bool
             /// Nil means open (`auth: noauth`); set for username + password.
             public var auth: Xray.Credentials?
-            /// Carried verbatim; nil entries still receive the assembly's
-            /// sniffing through the normal pipeline.
+            /// Carried verbatim; nil (the default) leaves the entry without
+            /// its own sniffing, so it receives the assembly's through the
+            /// normal pipeline.
             public var sniffing: Xray.Sniffing?
 
             internal init(
@@ -50,7 +51,7 @@ extension Xray {
                 port: Int = 10808,
                 udp: Bool = true,
                 auth: Xray.Credentials? = nil,
-                sniffing: Xray.Sniffing? = Xray.Sniffing()
+                sniffing: Xray.Sniffing? = nil
             ) {
                 self.tag = tag
                 self.listen = listen
@@ -94,8 +95,9 @@ extension Xray {
             public var port: Int
             /// Nil means open; set for username + password.
             public var auth: Xray.Credentials?
-            /// Carried verbatim; nil entries still receive the assembly's
-            /// sniffing through the normal pipeline.
+            /// Carried verbatim; nil (the default) leaves the entry without
+            /// its own sniffing, so it receives the assembly's through the
+            /// normal pipeline.
             public var sniffing: Xray.Sniffing?
 
             internal init(
@@ -103,7 +105,7 @@ extension Xray {
                 listen: String = "127.0.0.1",
                 port: Int = 10809,
                 auth: Xray.Credentials? = nil,
-                sniffing: Xray.Sniffing? = Xray.Sniffing()
+                sniffing: Xray.Sniffing? = nil
             ) {
                 self.tag = tag
                 self.listen = listen
@@ -188,8 +190,9 @@ extension Xray {
         /// Device-wide capture through the engine's own TUN inbound. Nil
         /// means proxy mode. See `Xray.TunEntry`.
         public var tun: TunEntry?
-        /// Sniffing for inbounds without their own (bare converted
-        /// inbounds). Entries carrying explicit sniffing keep it.
+        /// Sniffing for inbounds without their own: bare converted
+        /// inbounds and entries left at the default nil. Entries carrying
+        /// explicit sniffing keep it.
         public var sniffing: Xray.Sniffing?
         /// Per-outbound health probing. Needs `metricsPort` for readable
         /// results. See `Xray.Observatory`.
@@ -241,6 +244,7 @@ extension Xray {
             let http = self.http
             let dnsRelay = self.dnsRelay
             let remarks = self.remarks
+            let sniffing = self.sniffing
             let patch = self.patch
             return try Session().build(source, options: Session.Options(
                 sniffing: sniffing,
@@ -260,6 +264,11 @@ extension Xray {
                     if !inbounds.isEmpty {
                         dict["inbounds"] = .array(inbounds)
                     }
+                    // The session pipeline already injected this sniffing
+                    // into the conversion inbounds; the appended entries
+                    // above missed that pass, so inject again. Entries
+                    // with their own sniffing keep it — inject skips them.
+                    sniffing?.inject(into: &dict)
                     if let remarks {
                         dict["remarks"] = .string(remarks)
                     }
@@ -290,7 +299,7 @@ extension Xray {
     ) throws -> Assembly.SocksEntry {
         try Self.validPort(port, name: "socks")
         return Assembly.SocksEntry(
-            tag: tag, listen: listen, port: port, udp: udp, auth: auth, sniffing: sniffing ?? Xray.Sniffing()
+            tag: tag, listen: listen, port: port, udp: udp, auth: auth, sniffing: sniffing
         )
     }
 
@@ -303,7 +312,7 @@ extension Xray {
     ) throws -> Assembly.HttpEntry {
         try Self.validPort(port, name: "http")
         return Assembly.HttpEntry(
-            tag: tag, listen: listen, port: port, auth: auth, sniffing: sniffing ?? Xray.Sniffing()
+            tag: tag, listen: listen, port: port, auth: auth, sniffing: sniffing
         )
     }
 

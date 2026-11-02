@@ -13,6 +13,12 @@ extension Xray {
     /// doc["log"]?["loglevel"] = "error"
     /// doc.log?.loglevel?.stringValue // "error"
     /// ```
+    ///
+    /// Decoding probes the narrowest type first: whole JSON numbers stay
+    /// `.int` (only fractions become `.double`), and `doubleValue` reads
+    /// an `.int` back as a `Double` so thresholds compare without casting.
+    /// Object key order is not preserved — Swift dictionaries have none,
+    /// and the engine parses sections by name, so never depend on it.
     @dynamicMemberLookup
     public enum JSONValue: Codable, Sendable, Hashable {
         case null

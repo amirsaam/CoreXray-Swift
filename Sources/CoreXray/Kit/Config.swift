@@ -17,10 +17,14 @@ extension Xray {
             self.json = json
         }
 
-        /// Builds a configuration from proxy share links (vless://, vmess://,
-        /// ss://, trojan://, hysteria2://, Age-encrypted exports, or a
-        /// `{"outbounds":[...]}` JSON blob). Entries the engine cannot build
-        /// are dropped; if nothing survives, throws `Xray.Error`.
+        /// Builds a configuration from proxy share links: one `vless://`,
+        /// `trojan://`, `ss://`, or `socks://` link, many newline-separated,
+        /// a base64 blob of those, or an Age-encrypted export (with
+        /// `ageSecret`). Verified against the bundled engine: `vmess://`,
+        /// `hysteria2://`, `wireguard://`, and `{"outbounds":[...]}` JSON
+        /// blobs are dropped by its converter, so a feed of only those
+        /// throws `Xray.Error` ("no valid outbound found"). Entries the
+        /// engine cannot build are dropped; if nothing survives, throws.
         internal init(shareLinks: String, ageSecret: String? = nil) throws {
             self.json = try ConfigCalls.convert(shareLinks: shareLinks, ageSecret: ageSecret)
         }
@@ -34,8 +38,63 @@ extension Xray {
         /// Validates this configuration with the engine without starting
         /// anything. The thrown `Xray.Error` carries the engine's parser
         /// complaint, which is the cheapest way to reject bad user input.
+        /// The check runs inside the engine, so it needs the engine
+        /// stopped — while running, use `validateOffline()` instead.
         public func validate() throws {
             try ConfigCalls.check(json: json)
+        }
+
+        /// Checks the document's structure without touching the engine, so
+        /// it works while the engine runs. Verifies the text parses to a
+        /// JSON object with only known top-level sections, and that every
+        /// inbound and outbound carries the `tag` and `protocol` the engine
+        /// requires. This is shape, not semantics: unknown protocols,
+        /// unreachable addresses, and contradictory rules still need the
+        /// engine's own `validate()`.
+        public func validateOffline() throws {
+            let decoded: JSONValue
+            do {
+                decoded = try JSONDecoder().decode(JSONValue.self, from: Data(json.utf8))
+            } catch {
+                throw Error.invalidInput("the configuration is not valid JSON: \(error.localizedDescription)")
+            }
+            guard case .object(let dict) = decoded else {
+                throw Error.invalidInput("the configuration must be a JSON object holding Xray sections")
+            }
+            try Self.checkStructure(of: dict)
+        }
+
+        /// The top-level sections the engine parses. Anything else is a
+        /// typo the engine would reject at launch.
+        private static let knownSections: Set<String> = [
+            "log", "metrics", "stats", "observatory", "dns", "fakedns",
+            "inbounds", "outbounds", "routing", "policy", "reverse",
+            "transport", "api", "script", "env", "remarks",
+        ]
+
+        /// Shape-checks a decoded document: known sections only, and every
+        /// inbound/outbound carries `tag` plus `protocol`.
+        private static func checkStructure(of dict: JSONObject) throws {
+            for key in dict.keys where !knownSections.contains(key) {
+                throw Error.invalidInput(
+                    "unknown top-level section '\(key)': the engine parses \(knownSections.sorted().joined(separator: ", "))"
+                )
+            }
+            for section in ["inbounds", "outbounds"] {
+                guard let entries = dict[section]?.arrayValue else { continue }
+                for (index, entry) in entries.enumerated() {
+                    guard case .object(let fields) = entry else {
+                        throw Error.invalidInput("the \(section) entry at index \(index) must be a JSON object")
+                    }
+                    for field in ["tag", "protocol"] {
+                        guard case .string(let value) = fields[field], !value.isEmpty else {
+                            throw Error.invalidInput(
+                                "the \(section) entry at index \(index) is missing its '\(field)'"
+                            )
+                        }
+                    }
+                }
+            }
         }
 
         /// What a session can start from: JSON you already have, or share

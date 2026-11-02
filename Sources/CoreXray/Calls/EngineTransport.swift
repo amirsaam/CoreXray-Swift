@@ -127,11 +127,14 @@ internal final class EngineTransport {
         _ = try ask(method, payload: payload, as: Xray.EngineEnvelopeNoPayload.self)
     }
 
-    /// Serializes a JSON tree to compact text. `JSONValue` is always
-    /// encodable, so failure here means programmer error, not bad input.
+    /// Serializes a JSON tree to compact text, keys sorted so two builds of
+    /// the same intent diff cleanly. `JSONValue` is always encodable, so
+    /// failure here means programmer error, not bad input.
     internal static func serialize(_ value: Xray.JSONValue) throws -> String {
         do {
-            let data = try JSONEncoder().encode(value)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = .sortedKeys
+            let data = try encoder.encode(value)
             guard let text = String(data: data, encoding: .utf8) else {
                 throw Xray.Error.bridgeFailed("assembled JSON is not valid UTF-8")
             }

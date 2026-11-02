@@ -14,7 +14,9 @@ extension Xray {
         /// Inbound tag routing rules match on. Defaults to "tunIn".
         public var tag: String
 
-        /// Interface address the entry binds. Defaults to 127.0.0.1.
+        /// Kept for the inbound shape only: the engine ignores `listen`
+        /// (and any port) for `protocol: "tun"` — packets arrive on the
+        /// interface, not a socket. Defaults to 127.0.0.1.
         public var listen: String
 
         /// Interface name the engine creates (e.g. "utun10"). Nil leaves the
@@ -37,10 +39,18 @@ extension Xray {
         /// itself, e.g. ["0.0.0.0/0", "::/0"]. Nil means you route manually.
         public var autoSystemRoutingTable: [String]?
 
+        /// DNS servers the engine puts on the interface. The one engine
+        /// TUN field that matters on Apple platforms (the Windows-only
+        /// leak/DNS helpers and the cosmetic `desc` are deliberately not
+        /// exposed). Nil leaves interface DNS alone.
+        public var dns: [String]?
+
         /// Physical interface Xray's own traffic binds to, so it never loops
-        /// back into the tunnel. "auto" lets the engine choose — and when
-        /// `autoSystemRoutingTable` is set but this is nil, the engine
-        /// already treats it as "auto".
+        /// back into the tunnel. "auto" lets the engine choose. Nil means
+        /// the engine decides — including its own rule that a system
+        /// routing table without an explicit interface implies "auto",
+        /// which the wire object makes explicit so the document shows what
+        /// the engine will do.
         public var autoOutboundsInterface: String?
 
         /// The TUN file descriptor from the app or NetworkExtension that owns
@@ -49,8 +59,9 @@ extension Xray {
         /// (the macOS path) — no descriptor needed.
         public var fileDescriptor: Int32?
 
-        /// Carried verbatim; nil entries still receive the assembly's
-        /// sniffing through the normal pipeline.
+        /// Carried verbatim; nil (the default) leaves the entry without
+        /// its own sniffing, so it receives the session's through the
+        /// normal pipeline.
         public var sniffing: Xray.Sniffing?
 
         internal init(
@@ -59,17 +70,19 @@ extension Xray {
             name: String? = nil,
             mtu: Int = 1500,
             gateway: [String]? = nil,
+            dns: [String]? = nil,
             userLevel: Int? = nil,
             autoSystemRoutingTable: [String]? = nil,
             autoOutboundsInterface: String? = nil,
             fileDescriptor: Int32? = nil,
-            sniffing: Xray.Sniffing? = Xray.Sniffing()
+            sniffing: Xray.Sniffing? = nil
         ) {
             self.tag = tag
             self.listen = listen
             self.name = name
             self.mtu = mtu
             self.gateway = gateway
+            self.dns = dns
             self.userLevel = userLevel
             self.autoSystemRoutingTable = autoSystemRoutingTable
             self.autoOutboundsInterface = autoOutboundsInterface
@@ -85,6 +98,9 @@ extension Xray {
             if let gateway {
                 settings["gateway"] = .array(gateway.map(JSONValue.string))
             }
+            if let dns {
+                settings["dns"] = .array(dns.map(JSONValue.string))
+            }
             if let userLevel {
                 settings["userLevel"] = .int(userLevel)
             }
@@ -93,6 +109,14 @@ extension Xray {
             }
             if let autoOutboundsInterface {
                 settings["autoOutboundsInterface"] = .string(autoOutboundsInterface)
+            } else if let autoSystemRoutingTable, !autoSystemRoutingTable.isEmpty {
+                // Mirror of the engine's own default (`TunConfig.Build` in
+                // Xray-core's infra/conf/tun.go): a routing table without an
+                // explicit interface implies "auto", so the wire says what
+                // the engine would do anyway. Without a table the engine
+                // leaves the key unset — and forcing "auto" there breaks
+                // descriptor hand-off, so this does not.
+                settings["autoOutboundsInterface"] = .string("auto")
             }
             var entry: JSONObject = [
                 "tag": .string(tag),
@@ -141,6 +165,7 @@ extension Xray {
         name: String? = nil,
         mtu: Int = 1500,
         gateway: [String]? = nil,
+        dns: [String]? = nil,
         userLevel: Int? = nil,
         autoSystemRoutingTable: [String]? = nil,
         autoOutboundsInterface: String? = nil,
@@ -152,9 +177,9 @@ extension Xray {
         }
         return TunEntry(
             tag: tag, listen: listen, name: name, mtu: mtu, gateway: gateway,
-            userLevel: userLevel, autoSystemRoutingTable: autoSystemRoutingTable,
+            dns: dns, userLevel: userLevel, autoSystemRoutingTable: autoSystemRoutingTable,
             autoOutboundsInterface: autoOutboundsInterface,
-            fileDescriptor: fileDescriptor, sniffing: sniffing ?? Xray.Sniffing()
+            fileDescriptor: fileDescriptor, sniffing: sniffing
         )
     }
 }
@@ -167,6 +192,14 @@ extension Xray {
     /// has used for years — verified per iOS release, never assumed. Each
     /// hop is capability-checked first, so a renamed key throws
     /// `.invalidInput` instead of tripping an Objective-C exception.
+    /// There is no public API for this value — NetworkExtension simply
+    /// does not expose the descriptor — so private key-value access is
+    /// the only route, and a future OS or review pass could object to
+    /// it: keep the call isolated here and re-verify every release. The
+    /// public-API alternative — scanning fds 0…1024 with
+    /// `getsockopt(..., UTUN_OPT_IFNAME)` — was deliberately not chosen:
+    /// it fires a thousand syscalls per launch and races with concurrent
+    /// fd churn elsewhere in the process. One guarded read is steadier.
     public func providerFileDescriptor(from packetFlow: NSObject) throws -> Int32 {
         guard packetFlow.responds(to: NSSelectorFromString("socket")),
               let socket = packetFlow.value(forKey: "socket") as? NSObject,

@@ -43,35 +43,35 @@ extension Xray {
 extension Xray.Session: Xray.XraySessionProviding {}
 
 extension Xray.XraySessionProviding {
-    func build(_ source: Xray.Config.Source) throws -> Xray.Config {
+    public func build(_ source: Xray.Config.Source) throws -> Xray.Config {
         try build(source, options: nil)
     }
 
-    func start(_ source: Xray.Config.Source) throws {
+    public func start(_ source: Xray.Config.Source) throws {
         try start(source, options: nil)
     }
 
-    func start(_ source: Xray.Config.Source) async throws {
+    public func start(_ source: Xray.Config.Source) async throws {
         try await start(source, options: nil)
     }
 
-    func validate(_ source: Xray.Config.Source) throws {
+    public func validate(_ source: Xray.Config.Source) throws {
         try validate(source, options: nil)
     }
 
-    func validate(_ source: Xray.Config.Source) async throws {
+    public func validate(_ source: Xray.Config.Source) async throws {
         try await validate(source, options: nil)
     }
 
-    func recentLogs() -> [String] {
+    public func recentLogs() -> [String] {
         recentLogs(limit: 200)
     }
 
-    func preflightForProvider(_ source: Xray.Config.Source) throws {
+    public func preflightForProvider(_ source: Xray.Config.Source) throws {
         try preflightForProvider(source, options: nil)
     }
 
-    func preflightIssues(_ source: Xray.Config.Source) throws -> [String] {
+    public func preflightIssues(_ source: Xray.Config.Source) throws -> [String] {
         try preflightIssues(source, options: nil)
     }
 }

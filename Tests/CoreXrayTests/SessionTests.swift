@@ -156,7 +156,9 @@ final class SessionTests: XCTestCase {
             $0["tag"]?.stringValue == "tunIn"
         } ?? .null
         XCTAssertEqual(entry["settings"], .object(["mtu": .int(1500)]))
-        XCTAssertEqual(entry["sniffing"]?["enabled"], .bool(true))
+        // Default entries carry no sniffing of their own: with no session
+        // sniffing either, no key is written (minimal stays minimal).
+        XCTAssertNil(entry["sniffing"])
         // No descriptor, no env key: proxy-mode documents carry no tunnel state.
         XCTAssertNil(value["env"])
     }
@@ -310,7 +312,16 @@ final class SessionTests: XCTestCase {
         XCTAssertEqual(value["routing"]?["rules"]?[1]?["protocol"], .array([.string("http"), .string("tls")]))
         XCTAssertEqual(value["routing"]?["rules"]?[1]?["inboundTag"], .array([.string("tunIn")]))
         XCTAssertEqual(value["routing"]?["rules"]?[1]?["outboundTag"], .string("direct"))
-        XCTAssertEqual(value["routing"]?["final"], .string("proxy"))
+        // No "final" key (the engine ignores it): the destination arrives
+        // as a trailing `network: "tcp,udp"` rule instead — the engine
+        // rejects a condition-less rule, and every connection it routes is
+        // TCP or UDP.
+        XCTAssertNil(value["routing"]?["final"])
+        let lastRule = value["routing"]?["rules"]?.arrayValue?.last
+        XCTAssertEqual(lastRule?["type"], .string("field"))
+        XCTAssertEqual(lastRule?["outboundTag"], .string("proxy"))
+        XCTAssertEqual(lastRule?["network"], .string("tcp,udp"))
+        XCTAssertEqual(Set((lastRule?.objectValue ?? [:]).keys), ["type", "network", "outboundTag"])
         // "direct" already exists in the skeleton, so nothing is duplicated.
         let tags = value["outbounds"]?.arrayValue?.compactMap { $0["tag"]?.stringValue } ?? []
         XCTAssertEqual(tags.filter { $0 == "direct" }.count, 1)
@@ -324,7 +335,8 @@ final class SessionTests: XCTestCase {
         )
         let value = try JSONDecoder().decode(Xray.JSONValue.self, from: Data(config.json.utf8))
         XCTAssertEqual(value["outbounds"]?[0]?["tag"], .string("Node"))
-        XCTAssertEqual(value["routing"]?["final"], .string("Node"))
+        XCTAssertNil(value["routing"]?["final"])
+        XCTAssertEqual(value["routing"]?["rules"]?.arrayValue?.last?["outboundTag"], .string("Node"))
     }
 
     func testUntaggedProxyGetsProxyTag() throws {
@@ -333,7 +345,8 @@ final class SessionTests: XCTestCase {
         let config = try session.build(.json(bare), options: .init(routing: Xray.Routing(final: .proxy)))
         let value = try JSONDecoder().decode(Xray.JSONValue.self, from: Data(config.json.utf8))
         XCTAssertEqual(value["outbounds"]?[0]?["tag"], .string("proxy"))
-        XCTAssertEqual(value["routing"]?["final"], .string("proxy"))
+        XCTAssertNil(value["routing"]?["final"])
+        XCTAssertEqual(value["routing"]?["rules"]?.arrayValue?.last?["outboundTag"], .string("proxy"))
     }
 
     func testRoutingToProxyWithoutOutboundsThrows() throws {

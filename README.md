@@ -62,7 +62,7 @@ yourself as above). Exact is the recommended setup for this package.
 
 Versions here mirror the XTLS/libXray release the framework came from, with
 same names upstream uses minus the "libXray" part: upstream "libXray v26.10.29"
-is release/tag `v26.10.29` here.
+is tag `26.10.29` here, with the release itself named `v26.10.29`.
 
 Why exact rather than `upToNextMajor` or `upToNextMinor`: XTLS/libXray
 publishes daily calver releases, so an open-ended requirement turns everyone
@@ -206,11 +206,13 @@ alone (tun takes no auth: packets, not connections).
 Entry details:
 
 - `socksEntry(tag:listen:port:udp:auth:sniffing)` — defaults
-  `"socks-in"`, `"127.0.0.1"`, `10808`, `true`, nil, and default
-  sniffing. Open entries write `auth: "noauth"`; guarded ones write
-  `auth: "password"` with the pair in `users`.
+  `"socks-in"`, `"127.0.0.1"`, `10808`, `true`, nil, and nil sniffing (the
+  entry inherits the assembly's through the pipeline; pass an explicit
+  value to keep your own). Open entries write `auth: "noauth"`; guarded
+  ones write `auth: "password"` with the pair in `users`.
 - `httpEntry(tag:listen:port:auth:sniffing)` — defaults `"http-in"`,
-  `"127.0.0.1"`, `10809`, nil, and default sniffing. Open entries carry
+  `"127.0.0.1"`, `10809`, nil, and nil sniffing (same inheritance as the
+  SOCKS entry). Open entries carry
   no `settings` key at all; guarded ones write the pair in `accounts` (the
   HTTP inbound has no `auth` field in the engine schema).
 - `dnsRelay(tag:listen:port:address:remotePort:network:)` — defaults
@@ -234,27 +236,29 @@ and `generateAgeKeyPair` live on the shared instance: `Xray.shared`.)
 
 - `configuration(.json(_))` stores text untouched. No validation happens here; that is
   `validate()`'s job.
-- `configuration(.shareLinks(_):ageSecret:)` accepts vless, vmess, trojan, ss, socks, and
-  hysteria2 share links, newline-separated mixed feeds, legacy vmess QR
-  texts, and `{"outbounds":[...]}` JSON as input. Entries the engine cannot
-  build are dropped instead of failing the call; if nothing survives, it
-  throws `Xray.Error` ("no valid outbound found"). Throwing on half-specified
-  links — e.g. vless URIs without any security settings — is normal. When
-  the feed exports Age-encrypted content, pass the `AGE-SECRET-KEY-...`
-  string as `ageSecret`.
+- `configuration(.shareLinks(_):ageSecret:)` accepts `vless://`,
+  `trojan://`, `ss://`, and `socks://` links — one link,
+  newline-separated mixed feeds, or a base64 blob of those. Verified
+  against the bundled engine: `vmess://`, `hysteria2://`, `wireguard://`,
+  and `{"outbounds":[...]}` JSON blobs are dropped by its converter, so a
+  feed of only those throws `Xray.Error` ("no valid outbound found").
+  Entries the engine cannot build are dropped instead of failing the call;
+  if nothing survives, it throws. When the feed exports Age-encrypted
+  content, pass the `AGE-SECRET-KEY-...` string as `ageSecret`.
 - `shareLinks()` goes back: one routable outbound, one share link,
   newline-separated. A document with no routable outbounds yields an empty
   string rather than an error.
 - `validate()` checks a configuration without starting anything; the thrown
   error carries the engine's parser complaint, which is the cheapest way to
-  reject bad user input.
+  reject bad user input. It needs the engine stopped — while running, use
+  `validateOffline()`, which checks section names, outbound references, and
+  tag/protocol presence without touching the engine.
 - `decodeSubscription` (on `Xray.shared`) unwraps a provider's Age-encrypted
   subscription export: text starting with the Age armor header is decrypted
-  with `ageSecret` (the same secret handling
-  `configuration(.shareLinks:ageSecret:)` accepts), and *any other text comes back
-  unchanged*. It does not parse links and does not base64-decode — a link
-  list, a base64 blob, or a JSON blob goes to
-  `configuration(.shareLinks:ageSecret:)`, which does all three.
+  with `ageSecret`, and *any other text comes back unchanged*. It does not
+  parse links and does not base64-decode — a link list or a base64 blob goes
+  to `configuration(.shareLinks:ageSecret:)`, which handles both. (JSON
+  blobs are not accepted there either; the bundled converter drops them.)
 
 `json` is plain text you can persist, log, or edit between calls. Note the
 engine's answer for share-link input keeps only projected, buildable
@@ -319,9 +323,12 @@ try await session.start(.shareLinks(pastedText))
 try await session.validate(.json(savedJSON))
 
 // Deadline variant for providers: the system kills a start that overstays
-// its time budget, so give up first — the half-started instance is stopped
-// before the throw, which the provider can catch and retry. Providers must
-// use this (or the plain async variant): the sync starts cannot be bounded.
+// its time budget, so give up first — a timed-out start stops what it began
+// (stop-if-current: a newer launch is never killed) before throwing
+// `.timedOut`, which the provider can catch and retry. If the engine never
+// answers at all the throw still arrives on time, and the orphan self-stops
+// when (if) it ever finishes. Providers must use this (or the plain async
+// variant): the sync starts cannot be bounded.
 try await session.start(.shareLinks(pastedText), deadline: .seconds(20))
 
 // One call for the whole provider start: fetch, unwrap, top up geo assets,
@@ -336,7 +343,8 @@ try await session.start(
     options: Xray.shared.options(tun: tun, metricsPort: verifiedPort)
 )
 
-// Provider sanity before launch: loopback-only inbounds plus a tun inbound.
+// Provider sanity before launch: loopback-only inbounds with an explicit
+// listen address, plus a tun inbound that carries its file descriptor.
 try session.preflightForProvider(.shareLinks(pastedText), options: opts)
 
 // Same check as values, for UI: [] means provider-ready, anything else
@@ -350,7 +358,9 @@ try session.isRunning() -> Bool
 `Xray.Config.Source` is `.json(String)` or `.shareLinks(String)`; share links
 are converted through the engine first, then everything flows through the
 same pipeline: environment, tun, observatory, sniffing, dns, fakedns, log,
-routing, credentials, then `transform` last, then the geo asset check.
+metrics, routing, a `dns-in → dns-out` route when a `dokodemo-door` relay
+inbound meets a `dns` section, credentials, then `transform` last, then the
+standard outbounds, then the geo asset check.
 
 `Options` fields and defaults: `sniffing` (nil), `transform` (nil),
 `routing` (nil — replaces any routing section already in the document),
@@ -421,7 +431,11 @@ Xray.shared.routing(
                                 destination: .direct),
         Xray.shared.routingRule(inboundTags: ["dns-in"], destination: .dns),
     ],
-    final: .proxy  // catches whatever no rule matched; nil omits it
+    final: .proxy  // catches whatever no rule matched; nil omits it.
+    // The engine has no `final` field, so it is written as a trailing
+    // `network: "tcp,udp"` rule — every connection the engine routes is
+    // TCP or UDP. (A truly condition-less rule is rejected by the engine
+    // as having no effective fields, hence the network condition.)
 )
 ```
 
@@ -496,17 +510,25 @@ decides the setup:
   documents never carry tunnel state. The read itself is one call:
   `providerFileDescriptor(from: packetFlow)` takes the provider's flow (as a
   plain `NSObject`, no import needed) and returns the descriptor, throwing
-  `.invalidInput` when the key path is absent or the value unusable.
+  `.invalidInput` when the key path is absent or the value unusable. There
+  is no public API for this value, so the helper uses private key-value
+  access — the only route available. Re-verify it every iOS release and keep
+  it isolated to this call.
 
 `Xray.TunEntry` fields, all defaulted: `tag` (`"tunIn"`), `listen`
 (`"127.0.0.1"`), `name` (nil — the engine's default), `mtu` (1500),
 `gateway` (nil — e.g. `["198.18.0.1/15", "fc00::1/64"]`; IPv4 only on
-macOS), `userLevel` (nil — level 0),
+macOS), `dns` (nil — DNS servers the engine puts on the interface; the
+one TUN engine field that matters on Apple platforms, the Windows-only
+helpers are deliberately not exposed), `userLevel` (nil — level 0),
 `autoSystemRoutingTable` (nil — e.g. `["0.0.0.0/0", "::/0"]`),
-`autoOutboundsInterface` (nil — `"auto"` lets the engine choose, which it
-already implies when the routing table is set but this is missing),
-`fileDescriptor` (nil), and `sniffing` (default sniffing;
-nil entries still receive the assembly's sniffing). The entry carries no
+`autoOutboundsInterface` (nil — but the wire says `"auto"` when a routing
+table is set without an explicit interface, mirroring the engine's own
+default from `TunConfig.Build`: the engine implies `"auto"` there, so the
+document shows what the engine will do. With no table the key stays absent
+— forcing `"auto"` there breaks descriptor hand-off, so the kit does not),
+`fileDescriptor` (nil), and `sniffing` (nil — inherits the session's through
+the pipeline like any entry default). The entry carries no
 port and no auth — traffic arrives as packets, not connections — so keep
 any SOCKS listener on localhost *and* guarded when both modes coexist.
 
@@ -559,8 +581,9 @@ Xray.shared.proxyConfiguration(_ source: Config.Source, remarks: String? = nil, 
 - `version()` answers, for example, "26.10.29", the Xray-core build compiled
   into the framework. `health()` is the watchdog probe: false when nothing is
   running, true when an instance is up *and* answering, and a throw when the
-  bridge itself is wedged. Poll it on a timer; a throw means rebuild, not
-  retry.
+  bridge itself is wedged — each call is bounded at ~5 seconds (a wedged call
+  throws `.timedOut`), so a stuck engine cannot hang the poll loop. Poll it
+  on a timer; a throw means rebuild, not retry.
 - `findAvailablePorts` asks the engine for TCP ports nothing else on this
   machine is currently listening on. Nothing is killed or reserved — it is a
   check, and a port can be taken between the answer and your launch. Useful
@@ -579,7 +602,7 @@ Xray.shared.proxyConfiguration(_ source: Config.Source, remarks: String? = nil, 
   `ageSecret`, and *any other text comes back unchanged*. It does not parse
   links and does not base64-decode — that is `Config(shareLinks:)`'s job,
   which takes a single link, many newline-separated links, a base64 blob,
-  a `{"outbounds":[...]}` JSON blob, or this function's output. Pass the
+  or this function's output. Pass the
   `AGE-SECRET-KEY-...` string as `ageSecret` for encrypted exports.
 - `generateAgeKeyPair` makes keys for encrypted feeds: `AgeKeyPair.Kind.x25519`
   gives the classic pair, `.hybrid` folds ML-KEM-768 over it for post-quantum
@@ -604,7 +627,7 @@ Xray.shared.routing(domainStrategy:rules:final:) -> Routing
 Xray.shared.dns(hosts:queryStrategy:servers:) -> DNS
 Xray.shared.fakeDNS(ipPool:poolSize:) -> FakeDNS
 Xray.shared.log(level:access:error:dnsLog:) -> Log
-Xray.shared.tun(tag:listen:name:mtu:gateway:userLevel:...:fileDescriptor:sniffing:) throws -> TunEntry
+Xray.shared.tun(tag:listen:name:mtu:gateway:dns:userLevel:...:fileDescriptor:sniffing:) throws -> TunEntry
 Xray.shared.providerFileDescriptor(from: NSObject) throws -> Int32  // pass the provider's packetFlow
 Xray.shared.socksEntry(tag:listen:port:udp:auth:sniffing:) throws -> Assembly.SocksEntry
 Xray.shared.httpEntry(tag:listen:port:auth:sniffing:) throws -> Assembly.HttpEntry
@@ -697,18 +720,26 @@ binary. Setting `metricsPort` writes the three config pieces that enable it:
 the `metrics` listener on `127.0.0.1:port`, an empty `stats` section, and the
 four `policy.system` stats switches (merged into your existing policy, never
 replacing it). Out-of-range ports throw `.invalidInput` at assembly, before
-anything launches.
+anything launches. Treat the port like a local proxy listener: it binds
+loopback only, but any process on the device can reach loopback — and the
+endpoint also serves the engine's `pprof` block — so keep it unadvertised
+and verify it the way you'd guard SOCKS.
 
 `snapshot()` returns a `TrafficSnapshot`: per-tag `inbound`/`outbound`
 dictionaries of `TrafficCounter` (`up`, `down`, `total`), plus summed
-`totalUp`/`totalDown`. `delta(since:)` diffs two snapshots into a
-`TrafficDelta` — per-tag bytes moved in the interval, totals, and
-`upPerSecond`/`downPerSecond` derived from the wall-clock gap, so polling
-once a second reads as live speed. If the engine restarted between
-snapshots, the whole later reading counts as new traffic rather than going
-negative. Unreachable endpoints and non-200 answers throw `.bridgeFailed`;
-poll failures in your loop should keep the last good values and retry, the
-same way you'd treat any sampled signal.
+`totalUp`/`totalDown`. The engine counts every byte twice — once on the
+inbound it entered through, once on the outbound it left through — so the
+totals are 2x the bytes on the wire. Dashboards want the outbound side:
+`uplink`/`downlink` (and their `TrafficDelta` twins, with
+`uplinkPerSecond`/`downlinkPerSecond`) count that side only. `delta(since:)`
+diffs two snapshots into a `TrafficDelta` — per-tag bytes moved in the
+interval, totals, and `upPerSecond`/`downPerSecond` derived from the
+wall-clock gap, so polling once a second reads as live speed. If the engine
+restarted between snapshots, the whole later reading counts as new traffic
+rather than going negative. Unreachable endpoints and non-200 answers throw
+`.bridgeFailed`; poll failures in your loop should keep the last good values
+and retry, the same way you'd treat any sampled signal. (`/debug/vars` also
+exposes the engine's own `pprof` block — same endpoint, not parsed here.)
 
 #### `Xray.Observatory`: which outbounds are actually alive
 
@@ -808,6 +839,8 @@ Xray.Error.invalidInput(String)  // rejected before the call: bad ports, >5 ping
                                  // oversized (>16 MiB) raw requests, ...
 Xray.Error.geoAssets(String)     // a geosite:/geoip: reference has no readable
                                  // database — see Geo databases for the fix
+Xray.Error.timedOut(String)      // the engine never answered inside the bound:
+                                 // deadline starts, feed fetches, health checks
 ```
 
 `.engineFailed` strings come from the engine ("no valid outbound found" and
@@ -837,6 +870,8 @@ accessors (`isNull`, `boolValue`, `intValue`, `doubleValue`, `stringValue`,
 removes the key. `Xray.JSONObject` is `[String: Xray.JSONValue]`, the shape
 every configuration document takes. Integers decode as ints (never silently
 promoted to doubles), so ports and pool sizes survive the round trip exactly.
+Serialization sorts keys, so two builds of the same intent produce identical
+text and diff cleanly.
 
 ### Raw bridge
 
@@ -867,10 +902,13 @@ pointer and release it with `CGoFree`.
 The nightly job handles it. Timeline goes: at midnight UTC the workflow reads
 XTLS/libXray's latest release; if no matching tag exists here, it downloads
 upstream's `libxray-apple-cgo.zip`, hashes it, rewrites the `url` and
-`checksum` lines in `Package.swift` to that release, commits, tags
-`v<version>` (upstream "libXray v26.10.29" is release and tag `v26.10.29`
-here, plain), and publishes the release. A follow-up `swift test` job on a
-macOS runner runs the suite against the new tag as a consumer would.
+`checksum` lines in `Package.swift` to that release, and commits. A
+follow-up `swift test` job on a macOS runner then runs the suite — including
+a tripwire that asserts the engine still answers our `apiVersion: 3`
+envelope — against that exact commit. Only when the suite passes does the
+workflow tag `<version>` (upstream "libXray v26.10.29" is tag `26.10.29`
+here, release named `v26.10.29`) and publish the release: a red suite never
+gets a tag.
 
 After that, your app does not move on its own. With an exact requirement,
 moving to the new engine is one deliberate change of the version string in
@@ -891,9 +929,12 @@ you want the newest engine before the next midnight.
   taken from the `LibXrayAPIVersion` in upstream `invoke_model.go` (and please
   open an issue so the next daily version also carries the fix).
 - **"no valid outbound found"** — the engine declined every entry you passed.
-  Share links need to be fully specified; a bare `vless://uuid@host:443`
-  without scheme defaults will not build. Validate with `validate()` for
-  detail on a JSON config.
+  The bundled converter keeps `vless://`, `trojan://`, `ss://`, and
+  `socks://` (plus base64 of those) and drops `vmess://`, `hysteria2://`,
+  `wireguard://`, and `{"outbounds":[...]}` JSON — a feed of only dropped
+  kinds throws this. A bare `vless://uuid@host:443` without scheme defaults
+  will not build either. Validate with `validate()` for detail on a JSON
+  config.
 - **linker failures mentioning `Sec*` or `res_9_*` symbols** — your app built
   against the binary target directly instead of going through `CoreXray`.
   Depend on the `CoreXray` product, which owns the framework and library
@@ -909,7 +950,7 @@ sleep/wake, or a crash leave the tunnel up with nothing moving. The package
 gives you the three primitives; the app owns the loop:
 
 1. **Liveness** — poll `session` counters, not just `health()`. `health()`
-   proves the bridge answers; advancing `totalUp/totalDown` proves traffic
+   proves the bridge answers; advancing `uplink/downlink` proves traffic
    moves. `TrafficWatchdog` does the polling and calls `onStall` after
    `stalledAfter` with no movement (latched — one fire per episode, reset by
    any traffic). An idle tunnel reads as stalled, so start it after first

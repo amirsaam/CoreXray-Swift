@@ -150,10 +150,24 @@ final class SupervisionTests: XCTestCase {
     }
 
     func testPreflightPassesTunOnLoopback() throws {
-        let tun = try Xray.shared.tun()
+        let tun = try Xray.shared.tun(fileDescriptor: 99)
         try Xray.shared.newSession().preflightForProvider(
             .json(minimalJSON), options: Xray.shared.options(tun: tun)
         )
+    }
+
+    func testPreflightRejectsTunWithoutDescriptor() throws {
+        let tun = try Xray.shared.tun()
+        XCTAssertThrowsError(
+            try Xray.shared.newSession().preflightForProvider(
+                .json(minimalJSON), options: Xray.shared.options(tun: tun)
+            )
+        ) { error in
+            guard case Xray.Error.invalidInput(let message) = error else {
+                return XCTFail("expected .invalidInput, got \(error)")
+            }
+            XCTAssertTrue(message.contains("file descriptor"), "message should name the gap: \(message)")
+        }
     }
 
     func testPreflightIssuesReturnsProblemsAsValues() throws {
@@ -161,7 +175,7 @@ final class SupervisionTests: XCTestCase {
         XCTAssertEqual(proxyOnly.count, 1)
         XCTAssertTrue(proxyOnly[0].contains("no tun inbound"), "unexpected: \(proxyOnly)")
 
-        let tun = try Xray.shared.tun()
+        let tun = try Xray.shared.tun(fileDescriptor: 99)
         let clean = try Xray.shared.newSession().preflightIssues(
             .json(minimalJSON), options: Xray.shared.options(tun: tun)
         )
@@ -265,5 +279,17 @@ final class SupervisionTests: XCTestCase {
         XCTAssertTrue(config.json.contains("freedom"))
         XCTAssertTrue(providing.recentLogs().contains(where: { $0.contains("assembled") }))
         XCTAssertNil(providing.connectedSince)
+    }
+
+    // MARK: - M7: the bridge protocol tripwire
+
+    func testBridgeProtocolVersionStillAccepted() throws {
+        // Every bridge call sends apiVersion 3. If upstream ever requires
+        // a newer envelope, this live round-trip — not just the constant
+        // below — fails and forces a conscious update of
+        // `EngineTransport.protocolVersion` before any release is cut
+        // (the nightly workflow only tags after this suite passes).
+        XCTAssertEqual(EngineTransport.protocolVersion, 3)
+        XCTAssertFalse(try Xray.shared.version().isEmpty)
     }
 }

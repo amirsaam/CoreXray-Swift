@@ -16,6 +16,10 @@ extension Xray {
         /// not an object, unknown shape.
         case invalidInput(String)
 
+        /// The operation ran past its time budget: a start that never came
+        /// up, a health check against a wedged bridge.
+        case timedOut(String)
+
         /// A geo database a configuration depends on (`geosite:` / `geoip:`
         /// references) is missing, empty, or unreadable where the engine will
         /// look for it. The message names every file that was searched.
@@ -26,6 +30,7 @@ extension Xray {
             case .engineFailed(let message),
                  .bridgeFailed(let message),
                  .invalidInput(let message),
+                 .timedOut(let message),
                  .geoAssets(let message):
                 return message
             }
@@ -41,6 +46,8 @@ extension Xray {
                 return "the bridge itself failed — check the document size and shape before retrying"
             case .invalidInput:
                 return "the input was unusable before reaching the engine — check the call's documented rules"
+            case .timedOut:
+                return "the engine did not answer in time — check geo assets and listener ports, then retry"
             case .geoAssets:
                 return "fetch the database with Xray.GeoDownloader or point Options.environment at it"
             }

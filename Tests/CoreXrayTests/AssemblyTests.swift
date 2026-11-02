@@ -30,17 +30,23 @@ final class AssemblyTests: XCTestCase {
         ).assemble()
         let value = try JSONDecoder().decode(Xray.JSONValue.self, from: Data(config.json.utf8))
 
-        // The converted proxy keeps its tag; destinations resolve to it.
+        // The converted proxy keeps its tag; destinations resolve to it, and
+        // the "final" arrives as a trailing match-all rule (no "final" key —
+        // the engine would ignore it).
         XCTAssertEqual(value["outbounds"]?[0]?["tag"], .string("Bridge"))
-        XCTAssertEqual(value["routing"]?["final"], .string("Bridge"))
+        XCTAssertNil(value["routing"]?["final"])
+        XCTAssertEqual(value["routing"]?["rules"]?.arrayValue?.last?["outboundTag"], .string("Bridge"))
         // Referenced standards appear exactly once, with the right protocols.
         XCTAssertEqual(value["outbounds"]?.arrayValue?.first(where: { $0["tag"] == .string("direct") })?["protocol"], .string("freedom"))
         XCTAssertEqual(value["outbounds"]?.arrayValue?.first(where: { $0["tag"] == .string("block") })?["protocol"], .string("blackhole"))
         XCTAssertEqual(value["outbounds"]?.arrayValue?.first(where: { $0["tag"] == .string("dns-out") })?["protocol"], .string("dns"))
         XCTAssertEqual(value["routing"]?["rules"]?[0]?["outboundTag"], .string("dns-out"))
-        // Entries arrive with tags the rules reference.
+        // Entries arrive with tags the rules reference. This assembly sets
+        // no sniffing, so default-nil entries carry none either: sniffing
+        // is the assembly's to give (see the sniffing-inheritance test),
+        // not the entries' to assume.
         XCTAssertEqual(value["inbounds"]?[0]?["tag"], .string("socks-in"))
-        XCTAssertEqual(value["inbounds"]?[0]?["sniffing"]?["enabled"], .bool(true))
+        XCTAssertNil(value["inbounds"]?[0]?["sniffing"])
         XCTAssertEqual(value["inbounds"]?[1]?["tag"], .string("dns-in"))
         XCTAssertEqual(value["inbounds"]?[1]?["protocol"], .string("dokodemo-door"))
         // Typed sections land verbatim.
@@ -184,7 +190,8 @@ final class AssemblyTests: XCTestCase {
         let value = try JSONDecoder().decode(Xray.JSONValue.self, from: Data(config.json.utf8))
         // The provided outbound survives with its tag; destinations resolve.
         XCTAssertEqual(value["outbounds"]?[0]?["tag"], .string("proxy0"))
-        XCTAssertEqual(value["routing"]?["final"], .string("proxy0"))
+        XCTAssertNil(value["routing"]?["final"])
+        XCTAssertEqual(value["routing"]?["rules"]?.arrayValue?.last?["outboundTag"], .string("proxy0"))
         XCTAssertTrue((value["outbounds"]?.arrayValue?.compactMap { $0["tag"]?.stringValue } ?? []).contains("direct"))
         XCTAssertEqual(value["inbounds"]?[0]?["tag"], .string("socks-in"))
         try config.validate()
