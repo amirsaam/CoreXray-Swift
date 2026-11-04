@@ -9,7 +9,7 @@ libXray is a wrapper XTLS builds for embedding Xray-core into iOS, macOS, and
 tvOS clients. That is exactly what this package gives you, in two layers:
 
 - A binary target whose URL and SHA-256 checksum name one XTLS release,
-  updated by a nightly job. SwiftPM downloads the zip per version, verifies
+  moved forward by maintainer-merged core-update PRs. SwiftPM downloads the zip per version, verifies
   the hash, unpacks `LibXray.xcframework`, and caches it, so this repository
   itself stores no binaries.
 - `CoreXray`, a Swift module over the engine's single JSON entry point.
@@ -22,7 +22,7 @@ tvOS clients. That is exactly what this package gives you, in two layers:
 - [Importing](#importing)
 - [The engine in ninety seconds](#the-engine-in-ninety-seconds)
 - [API reference](#api-reference)
-- [Updating the engine across releases](#updating-the-engine-across-releases)
+- [Versioning and core updates](#versioning-and-core-updates)
 - [Troubleshooting](#troubleshooting)
 - [Staying connected: the rebuild recipe](#staying-connected-the-rebuild-recipe)
 - [How the layout works](#how-the-layout-works)
@@ -53,33 +53,41 @@ In `Package.swift`:
 ```swift
 .package(
     url: "https://github.com/amirsaam/CoreXray-Swift.git",
-    .exact("26.10.29")
+    .upToNextMinor(from: "261031.1.0")
 )
 ```
 
-Pick Exact Version in Xcode's requirement dropdown (or write `.exact`
-yourself as above). Exact is the recommended setup for this package.
+Pick Up To Next Minor Version in Xcode's requirement dropdown (or write
+`.upToNextMinor` yourself as above). Versions here are `Epoch.Major.Minor`:
 
-Versions here mirror the XTLS/libXray release the framework came from, with
-same names upstream uses minus the "libXray" part: upstream "libXray v26.10.29"
-is tag `26.10.29` here, with the release itself named `v26.10.29`.
+- **Epoch** is the XTLS/libXray release the framework came from, dots
+  removed: upstream `v26.10.31` is epoch `261031` (each group padded to two
+  digits, so `26.9.5` would be `260905` and epochs stay chronologically
+  sortable).
+- **Major** is our own package major: a breaking Swift API reshape.
+- **Minor** is our own package minor: everything else — additions and fixes.
 
-Why exact rather than `upToNextMajor` or `upToNextMinor`: XTLS/libXray
-publishes daily calver releases, so an open-ended requirement turns everyone
-who resolves your project onto that day's rebuild, on whatever cadence Xcode
-happens to resolve, without a decision on your side. Each version is one
-~100 MB download on first use, and an engine update rewrites how your
-connections behave, for better or worse. With `.exact`, an engine change only
-happens in a commit you write and can review, and CI builds stay
-reproducible across machines and months. Moving is deliberate: change the
-string to the tag you want (check the Releases page here or upstream's), and
-the next resolve pulls that engine and nothing else.
+So `261031.1.0` means core 26.10.31 with Swift code 1.0. The trailing pair
+is a fingerprint of the Swift code only: if the core moves but the Swift
+layer is untouched, the numbers carry over — `26115.1.0` following
+`261031.1.0` tells you the Swift code is unchanged. A Swift change on the
+same core bumps the tail instead: `261031.1.0` → `261031.1.1`.
 
-`Update To Latest Package Versions` in Xcode does not override an exact pin;
-it only picks versions the requirement allows, so your chosen version is safe
-from stray bumps. If you do want the newest engine as it lands rather than
-reviewing each one, `.upToNextMinor` is the loose alternative, chosen
-deliberately and with the download cost in mind.
+`.upToNextMinor(from: "261031.1.0")` allows `>=261031.1.0, <261031.2.0`, so
+Swift fixes on your core arrive on the next resolve, while a Swift major
+(`261031.2.0`) or a new core epoch (a new, much larger major number) never
+sneaks in — both stay a deliberate decision you make by changing the string.
+`.exact` is the stricter alternative if you want nothing to move without an
+edit.
+
+Each version is one ~100 MB download on first use: SwiftPM fetches the zip
+from XTLS, checks the checksum, and unpacks it; later builds reuse the
+cached framework. Resolving at, say, `261031.1.0` embeds exactly the engine
+that tag's `Package.swift` names. Nothing binary is committed here.
+
+Tags under the previous date-based scheme (`26.10.31`, `v26.10.31`) were
+removed and no longer resolve — move to a current `Epoch.Major.Minor`
+version.
 
 ## Importing
 
@@ -897,29 +905,49 @@ are the ones to prefer. The bare `CGoInvoke` / `CGoFree` C functions stay
 reachable for emergencies; if you call `CGoInvoke` yourself, capture the
 pointer and release it with `CGoFree`.
 
-## Updating the engine across releases
+## Versioning and core updates
 
-The nightly job handles it. Timeline goes: at midnight UTC the workflow reads
-XTLS/libXray's latest release; if no matching tag exists here, it downloads
-upstream's `libxray-apple-cgo.zip`, hashes it, rewrites the `url` and
-`checksum` lines in `Package.swift` to that release, and commits. A
-follow-up `swift test` job on a macOS runner then runs the suite — including
-a tripwire that asserts the engine still answers our `apiVersion: 3`
-envelope — against that exact commit. Only when the suite passes does the
-workflow tag `<version>` (upstream "libXray v26.10.29" is tag `26.10.29`
-here, release named `v26.10.29`) and publish the release: a red suite never
-gets a tag.
+How a new core reaches you:
 
-After that, your app does not move on its own. With an exact requirement,
-moving to the new engine is one deliberate change of the version string in
-your manifest (Xcode: edit the package's Exact Version field), followed by a
-resolve that fetches that day's archive straight from XTLS/libXray. Resolving
-at, say, `26.10.31` embeds exactly the engine that tag's `Package.swift`
-names. Nothing binary is committed here; this repository only ever changes by
-two manifest lines per release.
+1. A nightly check compares the core pinned in `Package.swift` with
+   XTLS/libXray's latest release. When upstream moved, it opens a PR from a
+   `core/v<version>` branch that changes exactly two manifest lines (url +
+   checksum) and pastes upstream's release notes into the PR body — libXray
+   itself ships no notes, so they come from the matching Xray-core release,
+   stripped of sponsor/donation boilerplate, auto-translated to English with
+   the original collapsed below (translation is best-effort; if it fails the
+   original goes in with a notice). Those notes are what tells you whether
+   the Swift layer needs changes.
+2. CI builds and tests the PR like any other, including the tripwire
+   asserting the engine still answers our `apiVersion: 3` envelope.
+3. If the Swift layer needs changes, commit them onto the branch with a
+   CHANGELOG entry; if not, merge as-is.
+4. Merging changes nothing for consumers. No tag, no release, no automation
+   past the merge — a PR is a pin update, never a release.
 
-You can also trigger the job from the Actions tab with workflow_dispatch if
-you want the newest engine before the next midnight.
+Cutting a release (maintainer): pick the numbers — the epoch from the pinned
+core (`26.10.31` → `261031`), the Swift major/minor unchanged unless the
+Swift code changed since the last tag — then:
+
+```bash
+git tag 261031.1.0
+git push origin 261031.1.0
+gh release create 261031.1.0 --title v261031.1.0 --notes "Core: XTLS/libXray v26.10.31
+Swift: 1.0 (unchanged)"
+```
+
+Tag pushes run the CI suite on the tag, so a red commit is still caught —
+delete the tag and release if that happens and re-cut. The release name
+keeps the `v` prefix (`v261031.1.0`); the tag itself is bare.
+
+A Swift-only release (same core) skips the PR flow entirely: push the Swift
+changes, then tag `<same-epoch>.<major>.<minor+1>` — or `<major+1>.0` for a
+breaking reshape. Yes, it really is that simple: the PR moves the pin, the
+tag freezes it, the release names it. Three separate human-visible steps,
+nothing hidden.
+
+You can also trigger the check from the Actions tab with workflow_dispatch
+if you want the newest engine before the next midnight.
 
 ## Troubleshooting
 
@@ -927,7 +955,7 @@ you want the newest engine before the next midnight.
   constant to update is `protocolVersion` inside
   `Sources/CoreXray/Calls/EngineTransport.swift`,
   taken from the `LibXrayAPIVersion` in upstream `invoke_model.go` (and please
-  open an issue so the next daily version also carries the fix).
+  open an issue so the next core-update PR also carries the fix).
 - **"no valid outbound found"** — the engine declined every entry you passed.
   The bundled converter keeps `vless://`, `trojan://`, `ss://`, and
   `socks://` (plus base64 of those) and drops `vmess://`, `hysteria2://`,
@@ -1018,8 +1046,9 @@ Sources/CoreXray/             typed API over the C bridge
     GeoCalls.swift           geo inventory encoding
 Tests/CoreXrayTests/          engine, session, and downloader tests (HTTPStub
                              keeps downloads and feeds hermetic: no packets)
-scripts/update_package.py    manifest rewriter used by the nightly job
-.github/workflows/update-libxray.yml    the nightly job (tests the new tag)
+scripts/update_package.py    manifest rewriter used by the core-check workflow
+scripts/pr_notes.py         PR-body builder: strips upstream boilerplate, English translation
+.github/workflows/core-update.yml    nightly upstream check; opens core-update PRs, never releases
 ```
 
 ## Credits

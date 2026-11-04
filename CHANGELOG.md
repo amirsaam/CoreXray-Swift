@@ -2,7 +2,7 @@
 
 The package follows clean-break versioning: no deprecation shims, no
 `@available` aliases. Removed or renamed APIs disappear and consumers
-recompile against the new shape. Pin releases with `.exact()` (see README).
+recompile against the new shape. Pin releases with `.upToNextMinor` (see README).
 
 Newest first. This log starts with the current batch; earlier history is the
 git log and the `<date>` release tags (bare version; the release itself is named `v<date>`).
@@ -33,6 +33,16 @@ git log and the `<date>` release tags (bare version; the release itself is named
 - `Xray.health()` — `isRunning` plus a bridge round-trip.
 
 ### Changed
+- Versioning is now `Epoch.Major.Minor`: the epoch is the pinned
+  XTLS/libXray release with dots removed (`v26.10.31` → `261031`), the
+  trailing pair fingerprints the Swift code only and carries over unchanged
+  across core bumps. Pin consumers with `.upToNextMinor`. Old date-based
+  tags were removed; those pins no longer resolve.
+- Core updates arrive as PRs, not releases: the nightly check opens a
+  `core/v<version>` PR carrying upstream's release notes, CI tests it,
+  merging only moves the pin. Releases are cut by hand as
+  `<epoch>.<swift-major>.<swift-minor>` tags (see README "Versioning and
+  core updates").
 - `Session` is `@unchecked Sendable`: safe to hold across `Task`
   boundaries, internal state behind a lock, bridge calls on the serial
   lane. Keep each session on one serial context anyway — `logger` runs on

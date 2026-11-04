@@ -1,0 +1,144 @@
+name: Propose core update
+
+# Nightly (or manual) check: if XTLS/libXray published something newer than
+# the release pinned in Package.swift, hash its asset, rewrite the manifest
+# on a core/v<version> branch, and open a PR carrying upstream's release
+# notes. Merging the PR only moves the pin — releases are cut by hand as
+# <epoch>.<swift-major>.<swift-minor> tags, so this workflow never tags,
+# never publishes, and never commits to main.
+
+on:
+  schedule:
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: corexray-core-check
+  cancel-in-progress: false
+
+jobs:
+  propose:
+    name: Check upstream and open a PR
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compare pinned core with upstream latest
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          pinned=$(grep -o 'releases/download/v[0-9.]*/' Package.swift | head -1 | sed 's#.*/v##; s#/$##')
+          latest=$(gh api repos/XTLS/libXray/releases/latest --jq .tag_name)
+          echo "pinned=v${pinned} latest=${latest}"
+          if [ "${latest}" = "v${pinned}" ]; then
+            echo "Pin already matches upstream latest; nothing to do."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Only ever move forward: a pin newer than upstream latest
+          # (manual pin, upstream hiccup) is left alone.
+          higher=$(printf 'v%s\n%s\n' "${pinned}" "${latest}" | sort -V | tail -1)
+          if [ "${higher}" != "${latest}" ]; then
+            echo "Pin v${pinned} is newer than upstream latest ${latest}; nothing to do."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "version=${latest#v}" >> "$GITHUB_OUTPUT"
+          echo "tag=${latest}" >> "$GITHUB_OUTPUT"
+
+      - name: Hash upstream's libxray-apple-cgo.zip
+        id: asset
+        if: steps.check.outputs.changed == 'true'
+        env:
+          VERSION: ${{ steps.check.outputs.version }}
+        run: |
+          set -euo pipefail
+          url="https://github.com/XTLS/libXray/releases/download/v${VERSION}/libxray-apple-cgo.zip"
+          curl -sSL --retry 3 -o /tmp/libxray-apple-cgo.zip "$url"
+
+          # Fail loudly if the asset layout changed upstream.
+          unzip -Z1 /tmp/libxray-apple-cgo.zip | grep -q "LibXray.xcframework/"
+
+          checksum=$(sha256sum /tmp/libxray-apple-cgo.zip | cut -d" " -f1)
+          echo "SHA-256: $checksum"
+          echo "checksum=$checksum" >> "$GITHUB_OUTPUT"
+
+      - name: Push branch and open (or refresh) the PR
+        if: steps.check.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.check.outputs.version }}
+          TAG: ${{ steps.check.outputs.tag }}
+          CHECKSUM: ${{ steps.asset.outputs.checksum }}
+        run: |
+          set -euo pipefail
+          git config user.name "corexray-updater"
+          git config user.email "actions@users.noreply.github.com"
+          branch="core/${TAG}"
+
+          # One core-update PR at a time: close any older one still open.
+          for old in $(gh pr list --state open --json headRefName --jq '.[].headRefName | select(startswith("core/v"))'); do
+            if [ "${old}" != "${branch}" ]; then
+              num=$(gh pr list --head "${old}" --state open --json number --jq '.[0].number // empty')
+              if [ -n "${num}" ]; then
+                gh pr close "${num}" --comment "Superseded by the check for ${TAG}."
+                git push origin --delete "${old}" || true
+              fi
+            fi
+          done
+
+          if git ls-remote --exit-code --heads origin "${branch}" >/dev/null 2>&1; then
+            git fetch origin "${branch}"
+            git checkout "${branch}"
+          else
+            git checkout -b "${branch}"
+          fi
+          python3 scripts/update_package.py --version "${VERSION}" --checksum "${CHECKSUM}"
+          git add Package.swift
+          if ! git diff --cached --quiet; then
+            git commit -m "Pin core ${TAG}"
+          fi
+          git push -u origin "${branch}"
+
+          if [ -n "$(gh pr list --head "${branch}" --state open --json number --jq '.[0] // empty')" ]; then
+            echo "PR for ${TAG} already open; branch refreshed."
+            exit 0
+          fi
+
+          epoch=$(echo "${VERSION}" | awk -F. '{printf "%d%02d%02d", $1, $2, $3}')
+          # libXray releases carry no notes (automated rebuilds); the real
+          # changelog lives on the matching Xray-core release.
+          if notes=$(gh api "repos/XTLS/Xray-core/releases/tags/${TAG}" --jq .body 2>/dev/null) && [ -n "${notes}" ]; then
+            src="XTLS/Xray-core"
+          else
+            notes=$(gh api "repos/XTLS/libXray/releases/tags/${TAG}" --jq .body 2>/dev/null || true)
+            src="XTLS/libXray"
+          fi
+          {
+            echo "Pins the engine to XTLS/libXray ${TAG}."
+            echo
+            echo "- \`Package.swift\`: url + SHA-256 checksum (two lines, nothing else)."
+            echo "- Suggested epoch for the release tag: \`${epoch}\`, as in \`${epoch}.<swift-major>.<swift-minor>\`."
+            echo "- The CI workflow builds and tests this branch like any other PR."
+            echo
+            echo "Merging this PR does **not** release anything. To release after merge,"
+            echo "cut the tag by hand (see README \"Versioning and core updates\")."
+            echo
+            echo "---"
+            echo
+          } > /tmp/pr-body.md
+          printf '%s' "${notes}" > /tmp/upstream-notes.md
+          if SRC="${src}" TAG="${TAG}" python3 scripts/pr_notes.py /tmp/upstream-notes.md > /tmp/notes-section.md; then
+            cat /tmp/notes-section.md >> /tmp/pr-body.md
+          else
+            # Translation helper itself broke; the raw notes still go in.
+            printf 'Upstream %s release notes for %s follow below.\n\n%s\n' "${src}" "${TAG}" "${notes}" >> /tmp/pr-body.md
+          fi
+          gh pr create --head "${branch}" --base main --title "Core ${TAG}" --body-file /tmp/pr-body.md
