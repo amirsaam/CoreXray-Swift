@@ -200,11 +200,12 @@ final class SessionTests: XCTestCase {
         XCTAssertEqual(value["env"]?["existing"], .string("kept"))
     }
 
-    func testTunWithoutDescriptorClearsStaleFileDescriptor() throws {
+    func testTunWithoutDescriptorClearsAtLaunch() async throws {
         // The engine applies document env into its process at launch and
         // never unsets; a descriptor from an earlier tunnel session must not
-        // hijack the next fd-less launch. Proving it here: building with a
-        // descriptor-less entry immediately clears the process env.
+        // hijack the next fd-less launch. Building alone is pure and leaves
+        // the process env untouched; launching clears the stale descriptor.
+        // (The instant override stands in for the bridge: no engine runs.)
         setenv("xray.tun.fd", "99", 1)
         setenv("XRAY_TUN_FD", "99", 1)
         defer {
@@ -213,6 +214,13 @@ final class SessionTests: XCTestCase {
         }
         let session = XraySession()
         _ = try session.build(.json(minimalJSON), options: .init(tun: XrayTunEntry()))
+        XCTAssertEqual(String(cString: getenv("xray.tun.fd")), "99")
+        XCTAssertEqual(String(cString: getenv("XRAY_TUN_FD")), "99")
+        session.launchOverride = { _ in }
+        defer { session.launchOverride = nil }
+        try await session.start(
+            .json(minimalJSON), options: .init(tun: XrayTunEntry()), deadline: .seconds(10)
+        )
         XCTAssertNil(getenv("xray.tun.fd"))
         XCTAssertNil(getenv("XRAY_TUN_FD"))
     }

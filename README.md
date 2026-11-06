@@ -175,7 +175,7 @@ is commentary.
    document's `env` map into its own process environment at launch. That is
    the documented carrier for `xray.location.asset` (geo directory),
    `xray.tun.fd` (TUN descriptor), and similar engine settings — and it is
-   why assembling a descriptor-less document clears stale `xray.tun.fd`
+   why launching a descriptor-less TUN document clears stale `xray.tun.fd`
    from the process: the engine never unsets what a previous launch set.
 5. **Geo data is lazy and external.** The engine resolves `geosite:` /
    `geoip:` at traffic time from `.dat` files it finds via `env`, and
@@ -477,9 +477,10 @@ Notes on the pieces:
   first start, nil after every stop). Pair it with traffic totals, which
   reset on every launch, for uptime math.
 - `recentEngineLogs(_ kind: XrayEngineLogKind, lines:)` tails the engine's own
-  log file (`.access` / `.error`) named by the last assembled document's log
-  section. The bridge exposes no log stream,
-  so the engine must be pointed at files first
+  log file (`.access` / `.error`) named by the last launched document's log
+  section. Paths are adopted only on a successful launch, so the tail
+  follows the run that actually launched — and the engine must be pointed
+  at files first
   (`log(access: path, error: path)`); anything else throws `.invalidInput`
   naming the fix. At most the trailing 256 KiB are read.
 - `XraySessionProviding` is the session's protocol surface for apps

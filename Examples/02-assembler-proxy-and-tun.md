@@ -108,7 +108,8 @@ Notes that bite in production:
 - `autoOutboundsInterface: "auto"` is emitted only when a routing table
   is set without an explicit interface — pass `autoSystemRoutingTable`
   and you get the self-routing-loop protection for free.
-- Assembling a descriptor-less document clears stale `xray.tun.fd` from
-  the process, because the engine applies `env` but never unsets it.
+- Launching a descriptor-less TUN document clears stale `xray.tun.fd` from
+  the process (assembling alone never touches process state), because
+  the engine applies `env` but never unsets it.
 - `patch` runs after everything, including the TUN env merge — inspect
   `config.json` when a key you set seems to vanish.

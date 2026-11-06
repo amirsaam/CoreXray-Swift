@@ -58,14 +58,15 @@ final class SupervisionTests: XCTestCase {
     }
 
     func testRecentEngineLogsTailRecordedFiles() throws {
+        // Log paths are adopted at launch success, never at build: tailing
+        // follows the run that actually launched.
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         let access = tempDir.appendingPathComponent("access.log")
         try (1 ... 10).map { "line \($0)\n" }.joined().write(to: access, atomically: true, encoding: .utf8)
+        let json = #"{"log":{"loglevel":"warning","access":"\#(access.path)"},"inbounds":[],"outbounds":[{"tag":"direct","protocol":"freedom"}]}"#
         let session = Xray.shared.newSession()
-        _ = try session.build(
-            .json(minimalJSON),
-            options: Xray.shared.options(log: Xray.shared.log(access: access.path))
-        )
+        try session.start(rawJSON: json)
+        defer { try? session.stop() }
         let tail = try session.recentEngineLogs(.access, lines: 3)
         XCTAssertEqual(tail, ["line 8", "line 9", "line 10"])
     }

@@ -129,22 +129,20 @@ public struct XrayTunEntry: Sendable {
         return entry
     }
 
-    /// Keeps the launch environment faithful to this entry. With a
-    /// descriptor, the fd is merged into the document's `env` as
-    /// `xray.tun.fd`, preserving keys already there. Without one, any fd
-    /// left in the process environment by an earlier TUN session is
-    /// cleared: the engine applies document `env` entries into its own
-    /// process at start and never unsets them, so a stale descriptor
-    /// would hijack the next fd-less launch and make it read a dead fd
-    /// instead of creating its own interface.
+    /// Merges this entry's descriptor into the document's `env` as
+    /// `xray.tun.fd`, preserving keys already there. Pure document
+    /// work: without a descriptor nothing is written and nothing is
+    /// cleared. Clearing a stale descriptor left in the process by an
+    /// earlier TUN session happens at launch, not here — the engine
+    /// applies document `env` into its process at start and never
+    /// unsets, so a stale descriptor would hijack the next fd-less
+    /// launch into reading a dead fd instead of creating its own
+    /// interface. See `XraySession`'s launch paths.
     func applyEnvironment(to config: inout XrayJSONObject) {
-        if let fileDescriptor {
-            var env = config["env"]?.objectValue ?? [:]
-            env["xray.tun.fd"] = .string("\(fileDescriptor)")
-            config["env"] = .object(env)
-        } else {
-            Self.clearStaleFileDescriptor()
-        }
+        guard let fileDescriptor else { return }
+        var env = config["env"]?.objectValue ?? [:]
+        env["xray.tun.fd"] = .string("\(fileDescriptor)")
+        config["env"] = .object(env)
     }
 
     /// Both spellings the engine's environment lookup accepts.

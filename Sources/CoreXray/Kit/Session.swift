@@ -294,7 +294,6 @@ public final class XraySession: @unchecked Sendable {
             try Self.checkGeoAssets(in: dict)
         }
         let text = try EngineTransport.serialize(.object(dict))
-        recordLogPaths(from: dict)
         log("assembled configuration (\(text.count) bytes)")
         return XrayConfig(json: text)
     }
@@ -314,34 +313,39 @@ public final class XraySession: @unchecked Sendable {
     /// up, so prefer a background task (or the async variant) from UI code.
     /// Starting again while an instance runs replaces it: a live
     /// instance is stopped first, so the launch never fails with an
-    /// already-running refusal. XrayLog paths are read from the document,
-    /// so engine-file tailing works here exactly like for built starts.
+    /// already-running refusal. The log section's file paths are adopted
+    /// only when the launch succeeds, so engine-file tailing follows
+    /// this run — a failed launch keeps the previous run's tail.
     public func start(_ config: XrayConfig) throws {
         try replaceRunningInstance()
+        let generation = nextGeneration()
+        let dict = documentDict(from: config.json)
+        if let dict { clearStaleTunDescriptorIfNeeded(for: dict) }
         log("launching engine (\(config.json.count) bytes of configuration)")
-        if let decoded = try? JSONDecoder().decode(XrayJSONValue.self, from: Data(config.json.utf8)),
-           case .object(let dict) = decoded {
-            recordLogPaths(from: dict)
-        }
         try LifecycleCalls.launch(config.json)
-        markLaunched()
+        if generation == currentGeneration() {
+            if let dict { recordLogPaths(from: dict) }
+            markLaunched()
+        }
         log("engine launched")
     }
 
     /// Launches JSON text exactly as given: no conversion, no sniffing,
     /// no transform. For fully pre-built configs you control end to end.
-    /// The log section's file paths are still recorded, so
-    /// `recentEngineLogs` works the same as for built documents.
+    /// The log section's file paths are adopted only on success, so
+    /// `recentEngineLogs` tails this run, never a failed attempt.
     /// Starting again replaces a running instance first.
     public func start(rawJSON json: String) throws {
         try replaceRunningInstance()
+        let generation = nextGeneration()
+        let dict = documentDict(from: json)
+        if let dict { clearStaleTunDescriptorIfNeeded(for: dict) }
         log("launching engine from raw JSON (\(json.count) bytes)")
-        if let decoded = try? JSONDecoder().decode(XrayJSONValue.self, from: Data(json.utf8)),
-           case .object(let dict) = decoded {
-            recordLogPaths(from: dict)
-        }
         try LifecycleCalls.launch(json)
-        markLaunched()
+        if generation == currentGeneration() {
+            if let dict { recordLogPaths(from: dict) }
+            markLaunched()
+        }
         log("engine launched")
     }
 
@@ -395,6 +399,58 @@ public final class XraySession: @unchecked Sendable {
         }
     }
 
+    /// The current launch epoch, for guarding post-launch stamps: a
+    /// launch that resolves after a newer start or a stop must not
+    /// stamp `connectedSince` or adopt log paths for an instance that
+    /// is no longer current.
+    private func currentGeneration() -> Int {
+        stateLock.withLock { _generation }
+    }
+
+    /// Decodes launch JSON back to its document, for post-launch
+    /// adoption. Documents come out of `build`, so this only fails on
+    /// programmer error — nil means skip adoption, never throw.
+    private func documentDict(from json: String) -> XrayJSONObject? {
+        guard let decoded = try? JSONDecoder().decode(XrayJSONValue.self, from: Data(json.utf8)),
+              case .object(let dict) = decoded else { return nil }
+        return dict
+    }
+
+    /// Clears a stale TUN descriptor from the process before launching
+    /// a document that carries a TUN inbound but no descriptor of its
+    /// own: the engine applies document `env` into its process at start
+    /// and never unsets, so a descriptor left by an earlier TUN session
+    /// would hijack this launch into reading a dead fd. Runs at launch,
+    /// never at build — inspecting a document must not touch process
+    /// state. A descriptor the document itself carries (or one the
+    /// caller set in the process deliberately) is left alone: only a
+    /// TUN inbound with neither may inherit a stale one.
+    private func clearStaleTunDescriptorIfNeeded(for dict: XrayJSONObject) {
+        guard case .array(let inbounds) = dict["inbounds"],
+              inbounds.contains(where: { $0.objectValue?["protocol"]?.stringValue == "tun" }) else { return }
+        let env = dict["env"]?.objectValue ?? [:]
+        if env["xray.tun.fd"] == nil && env["XRAY_TUN_FD"] == nil {
+            XrayTunEntry.clearStaleFileDescriptor()
+        }
+    }
+
+    /// First-wins latch for the deadline race below. Two detached tasks
+    /// (the timer, the launch waiter) share one continuation, and
+    /// continuations trap on a second resume — the gate lets exactly one
+    /// side through. Lock-disciplined like the rest of this type.
+    private final class StartRaceGate: @unchecked Sendable {
+        private let lock = NSLock()
+        private var settled = false
+
+        func settleOnce(_ action: () -> Void) {
+            let first = lock.withLock {
+                defer { settled = true }
+                return !settled
+            }
+            if first { action() }
+        }
+    }
+
     /// Stops the instance left behind by a timed-out start, but only
     /// when nothing newer began since: a follow-up start or stop bumps
     /// the epoch, and a stale timeout must never kill the current
@@ -427,10 +483,16 @@ public final class XraySession: @unchecked Sendable {
     ) async throws {
         let config = try build(source, options: options)
         try replaceRunningInstance()
+        let generation = nextGeneration()
+        let dict = documentDict(from: config.json)
+        if let dict { clearStaleTunDescriptorIfNeeded(for: dict) }
         log("launching engine (\(config.json.count) bytes of configuration)")
         let json = config.json
         try await Task.detached { try LifecycleCalls.launch(json) }.value
-        markLaunched()
+        if generation == currentGeneration() {
+            if let dict { recordLogPaths(from: dict) }
+            markLaunched()
+        }
         log("engine launched")
     }
 
@@ -458,6 +520,8 @@ public final class XraySession: @unchecked Sendable {
         // Captured after the replace-stop above: any stop or start
         // from here on invalidates this attempt's cleanup.
         let generation = nextGeneration()
+        let dict = documentDict(from: config.json)
+        if let dict { clearStaleTunDescriptorIfNeeded(for: dict) }
         log("launching engine (\(config.json.count) bytes of configuration)")
         let json = config.json
         let override = launchOverride
@@ -468,34 +532,46 @@ public final class XraySession: @unchecked Sendable {
                 try LifecycleCalls.launch(json)
             }
         }
-        do {
-            try await withThrowingTaskGroup(of: Void.self) { group in
-                group.addTask {
+        // Race the launch against the deadline with two detached tasks
+        // and a first-wins gate — deliberately not a task group. A group
+        // waits for every child on exit, so a wedged launch would wedge
+        // this call past the deadline: exactly what the deadline exists
+        // to refuse. The loser is abandoned; a timed-out launch settles
+        // on its own and is stopped in the background, but only when
+        // nothing newer began since.
+        let gate = StartRaceGate()
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            let timer = Task.detached {
+                do {
                     try await Task.sleep(for: deadline)
-                    throw XrayError.timedOut(
+                } catch {
+                    return // The launch won and cancelled us; nothing to do.
+                }
+                gate.settleOnce {
+                    Task.detached { [weak self] in
+                        _ = try? await launchTask.value
+                        self?.stopIfCurrent(generation: generation)
+                    }
+                    continuation.resume(throwing: XrayError.timedOut(
                         "engine start exceeded its deadline and was stopped; check geo assets and listener ports"
-                    )
+                    ))
                 }
-                group.addTask {
+            }
+            Task.detached {
+                do {
                     try await launchTask.value
-                }
-                try await group.next()
-                group.cancelAll()
-            }
-        } catch {
-            // Stopped-engine or wedged-bridge failures come from the
-            // launch itself as `XrayError` — nothing is running, so
-            // there is nothing to clean up. Anything else (the timeout
-            // above, or cancellation) may leave a live orphan behind.
-            if error as? XrayError == nil {
-                Task.detached { [weak self] in
-                    _ = try? await launchTask.value
-                    self?.stopIfCurrent(generation: generation)
+                    timer.cancel()
+                    gate.settleOnce { continuation.resume() }
+                } catch {
+                    timer.cancel()
+                    gate.settleOnce { continuation.resume(throwing: error) }
                 }
             }
-            throw error
         }
-        markLaunched()
+        if generation == currentGeneration() {
+            if let dict { recordLogPaths(from: dict) }
+            markLaunched()
+        }
         log("engine launched")
     }
 
@@ -869,8 +945,10 @@ public final class XraySession: @unchecked Sendable {
         stateLock.withLock { Array(_entries.suffix(max(0, limit))) }
     }
 
-    /// Tails the engine's own log file named by the last assembled
-    /// document: the `access` / `error` paths in its log section. The
+    /// Tails the engine's own log file named by the last launched
+    /// document: the `access` / `error` paths in its log section. Paths
+    /// are adopted only on a successful launch, so this tails the
+    /// current run — a failed launch keeps the previous run's tail. The
     /// engine only writes when the document points it at files, so a
     /// stdout, `none`, or missing path throws `.invalidInput` naming the
     /// fix. Reads at most the trailing 256 KiB, so a verbose access log

@@ -374,7 +374,9 @@ extension Xray {
     /// (document env, process env, executable directory) means a document
     /// that needs no `geosite:`/`geoip:` rule needs no download at all.
     /// Unlike `XrayGeoDownloader.download(into:)`, files already present are
-    /// never refetched.
+    /// never refetched. A configuration that is given but does not parse
+    /// throws instead of downloading: garbage in must not become
+    /// two downloads.
     public func ensureAssets(
         for config: XrayConfig? = nil,
         databases: [XrayGeoDatabase]? = nil,
@@ -385,9 +387,13 @@ extension Xray {
         let needed: [XrayGeoDatabase]
         if let databases {
             needed = databases
-        } else if let config,
-                  let document = try? JSONDecoder().decode(XrayJSONValue.self, from: Data(config.json.utf8)),
-                  let object = document.objectValue {
+        } else if let config {
+            guard let document = try? JSONDecoder().decode(XrayJSONValue.self, from: Data(config.json.utf8)),
+                  let object = document.objectValue else {
+                throw XrayError.invalidInput(
+                    "ensureAssets could not parse the configuration as JSON: pass databases explicitly or fix the document"
+                )
+            }
             needed = XrayGeoAssets.referenced(in: object)
         } else {
             needed = [.geosite, .geoip]
@@ -408,9 +414,13 @@ extension Xray {
         let needed: [XrayGeoDatabase]
         if let databases {
             needed = databases
-        } else if let config,
-                  let document = try? JSONDecoder().decode(XrayJSONValue.self, from: Data(config.json.utf8)),
-                  let object = document.objectValue {
+        } else if let config {
+            guard let document = try? JSONDecoder().decode(XrayJSONValue.self, from: Data(config.json.utf8)),
+                  let object = document.objectValue else {
+                throw XrayError.invalidInput(
+                    "ensureAssets could not parse the configuration as JSON: pass databases explicitly or fix the document"
+                )
+            }
             needed = XrayGeoAssets.referenced(in: object)
         } else {
             needed = [.geosite, .geoip]
