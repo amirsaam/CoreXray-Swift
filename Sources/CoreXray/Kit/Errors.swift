@@ -8,7 +8,8 @@ public enum XrayError: Swift.Error, LocalizedError, Sendable {
     case engineFailed(String)
 
     /// The bridge itself failed: undecodable envelope, unserializable
-    /// document, unreadable file.
+    /// document, unreadable file, or a transport step (download, metrics
+    /// poll) that never produced an engine answer.
     case bridgeFailed(String)
 
     /// The input was unusable before it ever reached the engine: not JSON,

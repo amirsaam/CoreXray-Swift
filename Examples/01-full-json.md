@@ -25,9 +25,14 @@ let config = try engine.configuration(.json(savedText))
 // From disk — the file is read and capped at the engine's 16 MiB limit:
 let fromDisk = try engine.configuration(.json(try String(contentsOf: url)))
 
-// Rename servers without touching anything else: remarks are cosmetic.
-var renamed = config
-renamed.remarks = "Tehran-03"
+// Edit the document without leaving Swift: parse to the typed tree,
+// mutate, serialize back. No casts, no `Any` — literals build, the
+// subscript and dynamic members read.
+var tree = try JSONDecoder().decode(XrayJSONValue.self, from: Data(config.json.utf8))
+tree["log"]?["loglevel"] = "error"
+let editedData = try JSONEncoder().encode(tree)
+let edited = String(decoding: editedData, as: UTF8.self)
+let quieter = try engine.configuration(.json(edited))
 ```
 
 `configuration(.json(_))` stores text untouched. It parses nothing and

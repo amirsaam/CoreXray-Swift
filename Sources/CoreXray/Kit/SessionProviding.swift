@@ -12,10 +12,12 @@ public protocol XraySessionProviding {
     func build(_ source: XrayConfigSource, options: XraySessionOptions?) throws -> XrayConfig
     func start(_ source: XrayConfigSource, options: XraySessionOptions?) throws
     func start(_ config: XrayConfig) throws
+    func start(_ config: XrayConfig, options: XraySessionOptions?) throws
     func start(rawJSON json: String) throws
     func start(contentsOf url: URL) throws
     func start(_ source: XrayConfigSource, options: XraySessionOptions?) async throws
     func start(_ source: XrayConfigSource, options: XraySessionOptions?, deadline: Duration) async throws
+    func start(_ config: XrayConfig, options: XraySessionOptions?, deadline: Duration) async throws
     func start(
         remoteSubscription url: URL,
         ageSecret: String?,

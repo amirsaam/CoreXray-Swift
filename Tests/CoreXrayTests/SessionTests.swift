@@ -349,12 +349,29 @@ final class SessionTests: XCTestCase {
 
     func testUntaggedProxyGetsProxyTag() throws {
         let session = XraySession()
-        let bare = #"{"inbounds":[],"outbounds":[{"protocol":"freedom"}]}"#
-        let config = try session.build(.json(bare), options: .init(routing: XrayRouting(final: .proxy)))
+        // A real proxy without a tag earns the name: later stages agree
+        // on "proxy" for it.
+        let proxied = #"{"inbounds":[],"outbounds":[{"protocol":"vless","settings":{}}]}"#
+        let config = try session.build(.json(proxied), options: .init(routing: XrayRouting(final: .proxy)))
         let value = try JSONDecoder().decode(XrayJSONValue.self, from: Data(config.json.utf8))
         XCTAssertEqual(value["outbounds"]?[0]?["tag"], .string("proxy"))
         XCTAssertNil(value["routing"]?["final"])
         XCTAssertEqual(value["routing"]?["rules"]?.arrayValue?.last?["outboundTag"], .string("proxy"))
+    }
+
+    func testFreedomNeverMasqueradesAsProxy() throws {
+        let session = XraySession()
+        // Labelling a freedom outbound "proxy" once sent tunnel traffic
+        // around the tunnel. Now it throws and names the fix instead.
+        let bare = #"{"inbounds":[],"outbounds":[{"protocol":"freedom"}]}"#
+        XCTAssertThrowsError(
+            try session.build(.json(bare), options: .init(routing: XrayRouting(final: .proxy)))
+        ) { error in
+            guard case XrayError.invalidInput(let message) = error else {
+                return XCTFail("expected .invalidInput, got \(error)")
+            }
+            XCTAssertTrue(message.contains(".direct"), "got: \(message)")
+        }
     }
 
     func testRoutingToProxyWithoutOutboundsThrows() throws {

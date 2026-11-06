@@ -25,12 +25,21 @@ internal final class PortCalls {
         guard ports.allSatisfy({ (1 ... 65_535).contains($0) }) else {
             throw XrayError.bridgeFailed("the engine answered with ports outside 1...65535")
         }
-        return ports
+        // Order-preserving dedupe: the engine may repeat a port across
+        // its answer, and a duplicate handed out twice would collide
+        // two listeners with each other.
+        var seen: Set<Int> = []
+        return ports.filter { seen.insert($0).inserted }
     }
 
     internal static func verify(count: Int, excluding: [Int]) throws -> [Int] {
         var verified: [Int] = []
         var excluded = excluding
+        // A privileged port is skipped, not fatal: the engine's
+        // candidates may include one, and a single privileged port
+        // must not poison the good ones around it. Remembered, so an
+        // exhausted search can still name privileges as the cause.
+        var sawPrivileged = false
         // Bounded rounds: each round asks the engine for the still-missing
         // remainder, so one bad round can't spin forever.
         for _ in 0 ..< 10 {
@@ -43,14 +52,15 @@ internal final class PortCalls {
                 // listen on UDP by default). A refusal names itself —
                 // EACCES is privileges, anything else is in use.
                 if let failure = bindErrno(for: port, udp: false) ?? bindErrno(for: port, udp: true) {
-                    if failure == EACCES {
-                        throw XrayError.invalidInput("port \(port) needs privileges the app does not have (ports below 1024): exclude it or add the right entitlement")
-                    }
+                    if failure == EACCES { sawPrivileged = true }
                     continue
                 }
                 verified.append(port)
                 if verified.count == count { return verified }
             }
+        }
+        if sawPrivileged {
+            throw XrayError.invalidInput("could not find \(count) bindable local ports and some candidates needed privileges the app does not have (ports below 1024): exclude them or add the right entitlement")
         }
         throw XrayError.bridgeFailed("could not find \(count) bindable local ports")
     }

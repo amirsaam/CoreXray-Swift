@@ -110,7 +110,7 @@ final class HardeningTests: XCTestCase {
             guard case XrayError.invalidInput(let message) = error else {
                 return XCTFail("expected .invalidInput, got \(error)")
             }
-            XCTAssertTrue(message.contains("selects nothing"), "got: \(message)")
+            XCTAssertTrue(message.contains("no destination"), "got: \(message)")
         }
     }
 
@@ -199,14 +199,21 @@ final class HardeningTests: XCTestCase {
     }
 
     func testProxyTagFallsBackToDirectOnly() throws {
+        // Fail-closed: a freedom-only document has no proxy, and aliasing
+        // `.proxy` to `direct` once sent tunnel traffic around the
+        // tunnel. The error names the fix.
         let doc = #"{"log":{"loglevel":"warning"},"inbounds":[],"outbounds":[{"protocol":"freedom"}]}"#
         let options = shared.options(
             routing: shared.routing(rules: [shared.routingRule(domains: ["example.com"], destination: .proxy)])
         )
-        let config = try shared.newSession().build(.json(doc), options: options)
-        let object = try decoded(config.json)
-        let rules = object["routing"]?["rules"]?.arrayValue ?? []
-        XCTAssertEqual(rules.first?["outboundTag"], .string("proxy"))
+        XCTAssertThrowsError(
+            try shared.newSession().build(.json(doc), options: options)
+        ) { error in
+            guard case XrayError.invalidInput(let message) = error else {
+                return XCTFail("expected .invalidInput, got \(error)")
+            }
+            XCTAssertTrue(message.contains(".direct"), "got: \(message)")
+        }
     }
 
     // MARK: - Transform-added relay route
@@ -386,7 +393,9 @@ final class HardeningTests: XCTestCase {
     }
 
     func testSnapshotRejectsHostPortShape() async throws {
-        let monitor = try shared.trafficMonitor(port: 24242, host: "example.com:8080")
+        // The factory already refuses it; the monitor itself refuses too,
+        // so a hand-built monitor from another path still fails fast.
+        let monitor = XrayTrafficMonitor(port: 24242, host: "example.com:8080")
         do {
             _ = try await monitor.snapshot()
             XCTFail("expected a throw")
@@ -631,8 +640,8 @@ final class HardeningTests: XCTestCase {
         let options = shared.options(
             routing: shared.routing(
                 rules: [
-                    shared.routingRule(network: "tcp,udp", destination: .proxy),
-                    shared.routingRule(network: "tcp,udp", destination: .proxy),
+                    shared.routingRule(network: "tcp,udp", destination: .direct),
+                    shared.routingRule(network: "tcp,udp", destination: .direct),
                 ],
                 final: .direct
             )
@@ -650,5 +659,111 @@ final class HardeningTests: XCTestCase {
             }
             XCTAssertTrue(message.contains("inbounds"), "got: \(message)")
         }
+    }
+
+    // MARK: - Status envelope body tolerance
+
+    func testStatusEnvelopeToleratesEveryBodyShape() throws {
+        // The Go side has answered status calls with missing, null,
+        // object, and scalar `data` across versions. Only success/error
+        // decide; the body shape never fails the call.
+        for body in ["", "\"data\":42,", "\"data\":null,", "\"data\":{\"x\":1},"] {
+            let raw = "{\"success\":true,\(body)\"error\":\"\"}"
+            let envelope = try EngineTransport.envelope(of: raw, as: XrayJSONValue?.self)
+            XCTAssertNoThrow(try EngineTransport.resolvedStatus(envelope: envelope))
+        }
+        let failed = try EngineTransport.envelope(
+            of: "{\"success\":false,\"error\":\"boom\"}", as: XrayJSONValue?.self)
+        XCTAssertThrowsError(try EngineTransport.resolvedStatus(envelope: failed)) { error in
+            guard case XrayError.engineFailed(let message) = error else {
+                return XCTFail("expected .engineFailed, got \(error)")
+            }
+            XCTAssertTrue(message.contains("boom"), "got: \(message)")
+        }
+    }
+
+    func testNestingDepthGuardRejectsAttack() {
+        // A thousand open brackets would exhaust the stack in recursive
+        // decode — an uncatchable crash. The depth pre-scan refuses first.
+        let hostile = String(repeating: "[", count: 200)
+        XCTAssertThrowsError(
+            try EngineTransport.envelope(of: hostile, as: XrayJSONValue?.self)
+        ) { error in
+            guard case XrayError.bridgeFailed(let message) = error else {
+                return XCTFail("expected .bridgeFailed, got \(error)")
+            }
+            XCTAssertTrue(message.contains("nested"), "got: \(message)")
+        }
+    }
+
+    // MARK: - Monitor host fail-fast
+
+    func testMonitorFactoryRejectsHostPort() {
+        XCTAssertThrowsError(try shared.trafficMonitor(port: 8080, host: "127.0.0.1:9090")) { error in
+            guard case XrayError.invalidInput(let message) = error else {
+                return XCTFail("expected .invalidInput, got \(error)")
+            }
+            XCTAssertTrue(message.contains("port"), "got: \(message)")
+        }
+    }
+
+    // MARK: - Geo download error taxonomy
+
+    func testGeoDownload404IsBridgeFailure() async throws {
+        HTTPStub.replies = [
+            HTTPStub.stubIP: HTTPStub.Reply(status: 200, body: Data([0x0A, 0x02, 0x00, 0x00])),
+            HTTPStub.stubSite: HTTPStub.Reply(status: 404, body: Data()),
+        ]
+        var downloader = XrayGeoDownloader(geoIPURL: HTTPStub.stubIP, geoSiteURL: HTTPStub.stubSite)
+        downloader.urlSession = HTTPStub.session()
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CoreXrayGeoTaxonomyTests")
+            .appendingPathComponent(UUID().uuidString)
+        do {
+            try await downloader.download(into: dir)
+            XCTFail("expected a download error")
+        } catch {
+            // A server failure is a bridge failure naming the URL and the
+            // status — never a raw URLError leaking the transport.
+            guard case XrayError.bridgeFailed(let message) = error else {
+                return XCTFail("expected .bridgeFailed, got \(error)")
+            }
+            XCTAssertTrue(message.contains("404"), "got: \(message)")
+        }
+        try? FileManager.default.removeItem(at: dir)
+    }
+
+    // MARK: - Config+options launch overloads
+
+    func testStartConfigWithOptionsAndDeadline() async throws {
+        let config = try shared.configuration(.json(minimalJSON))
+        let session = shared.newSession()
+        try await session.start(config, options: shared.options(), deadline: .seconds(30))
+        XCTAssertTrue(try session.isRunning())
+        try session.stop()
+    }
+
+    func testProxyConfigurationDiagnosticsReceivesBuildNotes() throws {
+        var lines: [String] = []
+        let link = "vless://12345678-abcd-abcd-abcd-123456789abc@example.com:443?type=tcp&security=tls&encryption=none&sni=example.com#Node"
+        let config = try shared.proxyConfiguration(
+            .shareLinks(link), socksPort: 18080, httpPort: 18081,
+            diagnostics: { lines.append($0) })
+        // Assembly diagnostics flow into the throwaway session's logger,
+        // so build notes reach the caller-supplied sink.
+        XCTAssertFalse(config.json.isEmpty)
+        XCTAssertTrue(lines.contains { $0.contains("assembled configuration") }, "got: \(lines)")
+    }
+
+    func testProxyConfigurationDropsDNSRelayOnRequest() throws {
+        let link = "vless://12345678-abcd-abcd-abcd-123456789abc@example.com:443?type=tcp&security=tls&encryption=none&sni=example.com#Node"
+        let dropped = try shared.proxyConfiguration(.shareLinks(link), dnsRelay: false)
+        let droppedObject = try decoded(dropped.json)
+        let droppedTags = droppedObject["inbounds"]?.arrayValue?.compactMap { $0["tag"]?.stringValue } ?? []
+        XCTAssertFalse(droppedTags.contains("dns-in"), "dnsRelay: false must drop the relay, got: \(droppedTags)")
+        let kept = try shared.proxyConfiguration(.shareLinks(link))
+        let keptObject = try decoded(kept.json)
+        let keptTags = keptObject["inbounds"]?.arrayValue?.compactMap { $0["tag"]?.stringValue } ?? []
+        XCTAssertTrue(keptTags.contains("dns-in"), "the relay ships by default, got: \(keptTags)")
     }
 }

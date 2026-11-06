@@ -299,8 +299,11 @@ public final class XraySession: @unchecked Sendable {
             dict["policy"] = .object(policy)
         }
         if let routing = options.routing {
+            if routing.rules.contains(where: { $0.destination == nil }) {
+                throw XrayError.invalidInput("routing contains a rule with no destination: the engine requires every rule to name an outbound — a destination-less rule never matches, with or without traffic conditions")
+            }
             if routing.rules.contains(where: { $0.isIneffective }) {
-                throw XrayError.invalidInput("routing contains a rule that selects nothing: the engine rejects rules with no traffic fields — give it domains, ips, a port, protocols, or inbound tags (a destination alone matches no traffic)")
+                throw XrayError.invalidInput("routing contains a rule that selects nothing: the engine rejects rules with no traffic fields — give it domains, ips, a port, a network, protocols, or inbound tags (a destination alone matches no traffic)")
             }
             for rule in routing.rules {
                 for (field, value) in [("port", rule.port), ("network", rule.network)] {
@@ -315,7 +318,7 @@ public final class XraySession: @unchecked Sendable {
             let proxyTag: String
             if routing.needsProxy {
                 guard let resolved = Self.ensureProxyTag(in: &dict) else {
-                    throw XrayError.invalidInput("routing sends traffic to the proxy but the document has no usable outbounds")
+                    throw XrayError.invalidInput("routing sends traffic to the proxy but the document has no proxy outbound: point the rule at .direct, or add a proxy outbound")
                 }
                 proxyTag = resolved
             } else {
@@ -347,10 +350,12 @@ public final class XraySession: @unchecked Sendable {
             }
             // A match-all sitting above `final` starves it: every routed
             // connection is already claimed, so the final silently never
-            // fires. Flag it — ordering, not engine behavior.
+            // fires. Flag it — ordering, not engine behavior. One is
+            // enough: a single match-all above `final` already claims
+            // everything the final would have caught.
             let matchAll = routing.rules.filter { $0.isMatchAll }
-            if routing.final != nil && matchAll.count > 1 {
-                log("routing has \(matchAll.count - 1) match-all rule(s) above `final`: they claim every connection, so the final never fires — move them below or narrow them")
+            if routing.final != nil && !matchAll.isEmpty {
+                log("routing has \(matchAll.count) match-all rule(s) above `final`: they claim every connection, so the final never fires — move them below or narrow them")
             }
         }
         options.transform?(&dict)
@@ -364,6 +369,17 @@ public final class XraySession: @unchecked Sendable {
         // The check is idempotent, so an explicit route for the tag wins.
         Self.ensureDNSRelayRoute(in: &dict)
         Self.ensureStandardOutbounds(in: &dict)
+        // Re-derived after the transform: it can add an `observatory`
+        // section (or delete the metrics one) that the pre-transform
+        // check above never saw. Probe answers publish on the metrics
+        // endpoint, so an observatory without it reads empty forever.
+        // The document's own metrics section counts — this is about
+        // presence, not about who wrote it.
+        if dict["observatory"] != nil && dict["metrics"] == nil {
+            throw XrayError.invalidInput(
+                "observatory is set but the document has no metrics section: probe answers are published on the metrics endpoint, so set metricsPort to read them"
+            )
+        }
         if let metricsPort = options.metricsPort {
             var taken: [Int] = []
             if case .array(let inbounds) = dict["inbounds"] {
@@ -423,6 +439,14 @@ public final class XraySession: @unchecked Sendable {
             // up, but the stamps belong to the winner, not to us.
             log("engine launch superseded by a newer start; stamps skipped")
         }
+    }
+
+    /// Launches an assembled configuration with options (environment,
+    /// metrics port, geo gate). Same replace-first, adopt-on-success
+    /// semantics as `start(_:)` — this is the form the rebuild recipe
+    /// holds onto: the config plus the options it launched with.
+    public func start(_ config: XrayConfig, options: XraySessionOptions? = nil) throws {
+        try start(.json(config.json), options: options)
     }
 
     /// Launches JSON text exactly as given: no conversion, no sniffing,
@@ -546,8 +570,16 @@ public final class XraySession: @unchecked Sendable {
     /// back to a comment-stripped decode: the engine's loader accepts
     /// `//` and `/* */` comments, so a commented document the engine
     /// launches must clear stale fds and adopt log paths too — a
-    /// strict-only decode would silently skip both.
+    /// strict-only decode would silently skip both. Shared with
+    /// preflight, so a commented document passes the check the launch
+    /// itself would pass.
     private func documentDict(from json: String) -> XrayJSONObject? {
+        Self.tolerantDict(from: json)
+    }
+
+    /// Strict decode first, comment-stripped fallback second — the one
+    /// tolerant reader every launch-path scan uses.
+    internal static func tolerantDict(from json: String) -> XrayJSONObject? {
         let data = Data(json.utf8)
         if let decoded = try? JSONDecoder().decode(XrayJSONValue.self, from: data),
            case .object(let dict) = decoded { return dict }
@@ -627,12 +659,10 @@ public final class XraySession: @unchecked Sendable {
     /// An asset directory named inside a JSON feed's own `env`, if any.
     /// A feed that pins its geodata next to itself travels with its
     /// address book — used only when neither the caller options nor an
-    /// explicit asset directory already named one.
-    internal static func feedEnvAsset(from sourceText: String) -> String? {
-        guard let data = sourceText.data(using: .utf8),
-              let decoded = try? JSONDecoder().decode(XrayJSONValue.self, from: data),
-              case .object(let dict) = decoded,
-              case .object(let env) = dict["env"] else { return nil }
+    /// explicit asset directory already named one. Takes the once-decoded
+    /// feed (nil for a raw link feed, which carries no `env`).
+    internal static func feedEnvAsset(in feed: XrayJSONObject?) -> String? {
+        guard case .object(let env) = feed?["env"] else { return nil }
         if let dir = env["xray.location.asset"]?.stringValue, !dir.isEmpty { return dir }
         if let dir = env["XRAY_LOCATION_ASSET"]?.stringValue, !dir.isEmpty { return dir }
         return nil
@@ -653,7 +683,13 @@ public final class XraySession: @unchecked Sendable {
         guard case .array(let inbounds) = dict["inbounds"],
               inbounds.contains(where: { $0.objectValue?["protocol"]?.stringValue == "tun" }) else { return }
         let env = dict["env"]?.objectValue ?? [:]
-        if env["xray.tun.fd"] == nil && env["XRAY_TUN_FD"] == nil {
+        // Empty strings count as missing — same rule as preflight —
+        // and so do non-string values, which preflight already flags
+        // as a construction bug rather than a descriptor.
+        let carriesFD = [env["xray.tun.fd"], env["XRAY_TUN_FD"]].contains {
+            $0?.stringValue?.isEmpty == false
+        }
+        if !carriesFD {
             XrayTunEntry.clearStaleFileDescriptor()
         }
     }
@@ -705,10 +741,15 @@ public final class XraySession: @unchecked Sendable {
             running = try LifecycleCalls.isRunning()
         } catch {
             // Never launch blind silently: if the probe itself failed,
-            // say so in the flight log. The launch still proceeds — a
+            // say so in the flight log, and clear the stamp — the stop
+            // inside `replaceRunningInstance` is what normally clears
+            // it, and that stop never ran here, so without this an old
+            // `connectedSince` would survive into a launch whose
+            // engine state is unknown. The launch still proceeds: a
             // live engine answers the launch with a refusal the caller
             // can act on (stop, then retry), which beats deadlocking
             // every start on a broken probe.
+            markStopped()
             log("engine state probe failed (\(error)); launching without knowing whether an instance runs")
             return
         }
@@ -777,6 +818,10 @@ public final class XraySession: @unchecked Sendable {
         var timer: Task<Void, Never>?
         var waiter: Task<Void, Never>?
         var continuation: CheckedContinuation<Void, Error>?
+        /// The launch's own failure, when it lost the race to the
+        /// timer: surfacing the engine's complaint beats reporting a
+        /// generic timeout for a launch that had already failed.
+        var launchError: Error?
     }
 
     /// Starts a source like `start(_:options:)`, but gives up if the
@@ -843,8 +888,14 @@ public final class XraySession: @unchecked Sendable {
                                 _ = try? await launchTask.value
                                 self?.stopIfCurrent(generation: generation, process: process)
                             }
-                            box.lock.withLock { box.continuation = nil }
-                            continuation.resume(throwing: XrayError.timedOut(
+                            // Prefer the launch's own failure when it
+                            // already lost: a timed-out call reporting the
+                            // engine's complaint beats a generic timeout.
+                            let failure: Error? = box.lock.withLock {
+                                box.continuation = nil
+                                return box.launchError
+                            }
+                            continuation.resume(throwing: failure ?? XrayError.timedOut(
                                 "engine start exceeded its deadline and was stopped; check geo assets and listener ports"
                             ))
                         }
@@ -858,7 +909,13 @@ public final class XraySession: @unchecked Sendable {
                                 continuation.resume()
                             }
                         } catch {
-                            box.lock.withLock { box.timer?.cancel() }
+                            box.lock.withLock {
+                                box.timer?.cancel()
+                                // Recorded for the timer path above: if the
+                                // timer already won, the caller hears this
+                                // instead of a generic timeout.
+                                box.launchError = error
+                            }
                             gate.settleOnce {
                                 box.lock.withLock { box.continuation = nil }
                                 continuation.resume(throwing: error)
@@ -896,6 +953,18 @@ public final class XraySession: @unchecked Sendable {
         } else {
             log("engine launch superseded by a newer start; stamps skipped")
         }
+    }
+
+    /// Launches an assembled configuration under a deadline: the
+    /// rebuild recipe's resume form, holding the config plus the
+    /// options it launched with. Forwards to
+    /// `start(_:options:deadline:)` over the config's JSON.
+    public func start(
+        _ config: XrayConfig,
+        options: XraySessionOptions? = nil,
+        deadline: Duration
+    ) async throws {
+        try await start(.json(config.json), options: options, deadline: deadline)
     }
 
     /// Assembles on the caller, then validates the result without
@@ -939,19 +1008,25 @@ public final class XraySession: @unchecked Sendable {
         options: XraySessionOptions? = nil
     ) throws -> [String] {
         let config = try build(source, options: options)
-        guard let document = try? JSONDecoder().decode(XrayJSONValue.self, from: Data(config.json.utf8)),
-              let object = document.objectValue else {
+        guard let object = Self.tolerantDict(from: config.json) else {
             throw XrayError.invalidInput("provider preflight could not parse the assembled document")
         }
         var problems: [String] = []
         var sawTun = false
         var sawTunFD = false
         var seenPorts: [Int: String] = [:]
+        var seenTags: Set<String> = []
         if case .array(let inbounds) = object["inbounds"] {
             for inbound in inbounds {
                 guard let entry = inbound.objectValue else { continue }
                 let tag = entry["tag"]?.stringValue ?? "?"
-                if entry["protocol"]?.stringValue == "tun" {
+                if !seenTags.insert(tag).inserted, tag != "?" {
+                    problems.append(
+                        "inbound tag '\(tag)' is used twice: inboundTag routing between duplicates is ambiguous — give each inbound its own tag"
+                    )
+                }
+                let isTun = entry["protocol"]?.stringValue == "tun"
+                if isTun {
                     sawTun = true
                     // The document env is the only carrier the launch
                     // honors: it clears the process variables first (the
@@ -1024,13 +1099,23 @@ public final class XraySession: @unchecked Sendable {
                         "inbound '\(tag)' sets no port: the engine would fail it at traffic time"
                     )
                 }
-                guard let listen = entry["listen"]?.stringValue else {
-                    problems.append(
-                        "inbound '\(tag)' sets no listen address: set it to 127.0.0.1 explicitly instead of relying on the engine default"
-                    )
+                guard !isTun, let listen = entry["listen"]?.stringValue else {
+                    // `tun` is exempt: the engine ignores `listen` for
+                    // it, so demanding one would be noise. Every other
+                    // inbound listens on a socket — flag a missing one
+                    // here instead of at engine traffic time.
+                    if !isTun {
+                        problems.append(
+                            "inbound '\(tag)' sets no listen address: set it to 127.0.0.1 explicitly instead of relying on the engine default"
+                        )
+                    }
                     continue
                 }
                 if !["127.0.0.1", "localhost", "::1"].contains(listen) {
+                    // Loopback-only is a policy, not an engine demand: the
+                    // provider is a privileged tunnel, and a wildcard
+                    // listener would expose the proxy to the LAN. Relax
+                    // it only if you also take the LAN exposure.
                     problems.append(
                         "inbound '\(tag)' listens on \(listen): extensions can only bind loopback"
                     )
@@ -1165,8 +1250,14 @@ public final class XraySession: @unchecked Sendable {
             // not be overridden. Next wins a feed that pins its own
             // geodata in its JSON `env` (the databases travel with the
             // feed); the explicit directory is the last resort.
+            // One decode for the whole top-up: the asset lookup and both
+            // reference scans below share it, and the launch's own build
+            // parses once more for validation — two parses total of a
+            // capped feed instead of four. A raw link feed decodes to
+            // nil, which every scan below already treats as "no JSON".
+            let feed = Self.tolerantDict(from: unwrapped)
             if env["xray.location.asset"] == nil && env["XRAY_LOCATION_ASSET"] == nil {
-                env["xray.location.asset"] = Self.feedEnvAsset(from: unwrapped) ?? assetDirectory.path
+                env["xray.location.asset"] = Self.feedEnvAsset(in: feed) ?? assetDirectory.path
             }
             resolved.environment = env
             let topUpDirectory = URL(
@@ -1176,14 +1267,14 @@ public final class XraySession: @unchecked Sendable {
             // the typed options for geo references (no conversion, no
             // transform, no gate), fetch what is missing, then run the
             // single real build with the gate on.
-            let needed = Self.referencedDatabases(sourceText: unwrapped, options: resolved)
+            let needed = Self.referencedDatabases(feed: feed, options: resolved)
             if !needed.isEmpty {
                 _ = try await Xray.shared.ensureAssets(for: nil, databases: needed, in: topUpDirectory)
             }
             // External files have no downloader behind them: fail here,
             // naming the file and where it must be placed, instead of
             // launching into the gate's refusal a moment later.
-            let external = Self.referencedExternalFiles(sourceText: unwrapped, options: resolved)
+            let external = Self.referencedExternalFiles(feed: feed, options: resolved)
             if !external.isEmpty {
                 let docEnv: XrayJSONObject? = resolved.environment.map { env in
                     Dictionary(uniqueKeysWithValues: env.map { ($0.key, XrayJSONValue.string($0.value)) })
@@ -1196,9 +1287,9 @@ public final class XraySession: @unchecked Sendable {
 
     // MARK: - Private
 
-    /// Geo databases a launch will need, read from the feed text plus
-    /// the typed options — without converting, transforming, or gating,
-    /// so the remote start assembles exactly once. A JSON feed is
+    /// Geo databases a launch will need, read from the once-decoded feed
+    /// plus the typed options — without converting, transforming, or
+    /// gating, so the remote start assembles exactly once. A JSON feed is
     /// scanned for `geosite:`/`geoip:` references in its routing and
     /// dns sections; a raw link feed converts to outbounds, which carry
     /// no references, so only the options matter there. References a
@@ -1206,12 +1297,10 @@ public final class XraySession: @unchecked Sendable {
     /// caught by the launch-time gate, which refuses to run without
     /// them — keep transforms out of the asset path, or pre-fetch
     /// those databases yourself.
-    private static func referencedDatabases(sourceText: String, options: XraySessionOptions) -> [XrayGeoDatabase] {
+    private static func referencedDatabases(feed: XrayJSONObject?, options: XraySessionOptions) -> [XrayGeoDatabase] {
         var names: Set<String> = []
-        if let data = sourceText.data(using: .utf8),
-           let decoded = try? JSONDecoder().decode(XrayJSONValue.self, from: data),
-           case .object(let dict) = decoded {
-            for database in XrayGeoAssets.referenced(in: dict) {
+        if let feed {
+            for database in XrayGeoAssets.referenced(in: feed) {
                 names.insert(database.rawValue)
             }
         }
@@ -1234,7 +1323,9 @@ public final class XraySession: @unchecked Sendable {
                 }
             }
         }
-        return names.compactMap(XrayGeoDatabase.init)
+        // Sorted: deterministic download order, deterministic logs —
+        // the Set above would wander between runs otherwise.
+        return names.compactMap(XrayGeoDatabase.init).sorted { $0.rawValue < $1.rawValue }
     }
 
     /// The database name in a string like `"geosite:category-ads"`.
@@ -1249,12 +1340,10 @@ public final class XraySession: @unchecked Sendable {
     /// `referencedDatabases`, but for `ext:` filenames, which no
     /// downloader can fetch — the top-up checks them for existence
     /// instead of downloading them.
-    private static func referencedExternalFiles(sourceText: String, options: XraySessionOptions) -> [String] {
+    private static func referencedExternalFiles(feed: XrayJSONObject?, options: XraySessionOptions) -> [String] {
         var files: Set<String> = []
-        if let data = sourceText.data(using: .utf8),
-           let decoded = try? JSONDecoder().decode(XrayJSONValue.self, from: data),
-           case .object(let dict) = decoded {
-            files.formUnion(XrayGeoAssets.referencedExternalFiles(in: dict))
+        if let feed {
+            files.formUnion(XrayGeoAssets.referencedExternalFiles(in: feed))
         }
         var candidates: [String] = []
         if let routing = options.routing {
@@ -1345,25 +1434,25 @@ public final class XraySession: @unchecked Sendable {
         inbound["settings"] = .object(guarded)
     }
 
-    /// Returns the first outbound's tag, resolving `.proxy` past
-    /// non-proxies. Conversion output usually leads with `direct`, and
-    /// routing the proxy there would bypass the tunnel — so `freedom`,
-    /// `blackhole`, and `dns` outbounds are skipped. An entry without a
-    /// readable `protocol` is skipped rather than selected: matching the
-    /// old fallback there once mislabelled garbage as the proxy. Falls
-    /// back to the first outbound when nothing else qualifies; returns
-    /// nil when the document has no outbounds, or when the winner is
-    /// not an object at all. An untagged winner is tagged `"proxy"` in
-    /// place so later stages agree on the name.
+    /// Finds the outbound `.proxy` destinations resolve to, tagging an
+    /// untagged winner `"proxy"` in place so later stages agree on the
+    /// name. Returns nil when the document has no outbounds, when the
+    /// winner is not an object at all, or when nothing qualifies as a
+    /// proxy: there is deliberately no fallback to the first outbound.
+    /// A document of only passthrough outbounds (`freedom`,
+    /// `blackhole`, `dns`, `loopback`) has no proxy, and resolving
+    /// `.proxy` to `direct` would silently send tunnel traffic around
+    /// the tunnel — so the caller throws instead of aliasing.
     private static func ensureProxyTag(in config: inout XrayJSONObject) -> String? {
         guard case .array(var outbounds) = config["outbounds"], !outbounds.isEmpty else { return nil }
-        let passthrough: Set<String> = ["freedom", "blackhole", "dns"]
-        let index = outbounds.firstIndex { outbound in
+        let passthrough: Set<String> = ["freedom", "blackhole", "dns", "loopback"]
+        // No `?? outbounds.startIndex` fallback here — see the doc
+        // comment: an unqualified winner must fail, never alias.
+        guard let index = outbounds.firstIndex(where: { outbound in
             guard case .object(let entry) = outbound else { return false }
             guard case .string(let proto) = entry["protocol"] else { return false }
             return !passthrough.contains(proto)
-        } ?? outbounds.startIndex
-        guard case .object(var winner) = outbounds[index] else { return nil }
+        }), case .object(var winner) = outbounds[index] else { return nil }
         if case .string(let tag) = winner["tag"] { return tag }
         winner["tag"] = .string("proxy")
         outbounds[index] = .object(winner)
@@ -1411,50 +1500,78 @@ public final class XraySession: @unchecked Sendable {
         }
     }
 
-    /// Routes every `dokodemo-door` XrayDNS relay inbound at an
+    /// Routes the `dokodemo-door` DNS-relay inbounds at an
     /// `inboundTag` → `dns-out` rule: without it the relay's queries
     /// fall through to `final` (or the proxy) instead of the local
-    /// resolver. Appends the rule when no rule already claims the relay
-    /// tag, and creates the routing section when the document has none.
-    /// A `dns` section is deliberately not required — the relay
+    /// resolver. Appends one rule covering every relay tag no rule
+    /// already claims, and creates the routing section when the document
+    /// has none. A `dns` section is deliberately not required — the relay
     /// forwards to its own configured address either way, and the route
     /// is about the relay's traffic, not the section. Runs after the
     /// transform so transform-added relays are covered; runs before the
     /// standard-outbound backfill so a referenced `dns-out` always
-    /// exists. An explicit route for the tag always wins over this
-    /// default.
+    /// exists. An explicit route for a tag always wins over this
+    /// default — only unclaimed tags are appended.
+    ///
+    /// Only inbounds that quack like a DNS relay are routed: the remote
+    /// `settings.port` or the local `port` must be 53 (either as a
+    /// number or as text). The same inbound type doubles as a
+    /// transparent redirect, and routing a port-80/443 redirect into
+    /// `dns-out` would hijack non-DNS traffic — so a fully-configured
+    /// redirect to any other port is left alone. An inbound with no
+    /// `settings` at all is treated as a relay: there is nothing to
+    /// redirect with, so it can only be the DNS use. The `dns-out`
+    /// created by the backfill is a bare protocol-plus-tag skeleton,
+    /// and that is enough: the engine needs no `settings` on a dns
+    /// outbound (verified — a document carrying exactly this skeleton
+    /// launches).
     private static func ensureDNSRelayRoute(in config: inout XrayJSONObject) {
         guard case .array(let inbounds) = config["inbounds"] else { return }
         let relayTags = inbounds.compactMap { inbound -> String? in
             guard case .object(let entry) = inbound,
                   entry["protocol"]?.stringValue == "dokodemo-door",
-                  case .string(let tag) = entry["tag"] else { return nil }
+                  case .string(let tag) = entry["tag"],
+                  Self.looksLikeDNSRelay(entry) else { return nil }
             return tag
         }
         guard !relayTags.isEmpty else { return }
         var routing = config["routing"]?.objectValue ?? [:]
         var rules = routing["rules"]?.arrayValue ?? []
-        let covered = rules.contains { rule in
-            guard case .object(let entry) = rule else { return false }
-            let claimed: [String]
+        var claimed: Set<String> = []
+        for rule in rules {
+            guard case .object(let entry) = rule else { continue }
             if case .array(let tags) = entry["inboundTag"] {
-                claimed = tags.compactMap(\.stringValue)
+                claimed.formUnion(tags.compactMap(\.stringValue))
             } else if case .string(let tag) = entry["inboundTag"] {
-                claimed = [tag]
-            } else {
-                return false
+                claimed.insert(tag)
             }
-            return claimed.contains { relayTags.contains($0) }
         }
-        if !covered {
+        let uncovered = relayTags.filter { !claimed.contains($0) }
+        if !uncovered.isEmpty {
             rules.append(.object([
                 "type": .string("field"),
-                "inboundTag": .array(relayTags.map(XrayJSONValue.string)),
+                "inboundTag": .array(uncovered.map(XrayJSONValue.string)),
                 "outboundTag": .string("dns-out"),
             ]))
             routing["rules"] = .array(rules)
             config["routing"] = .object(routing)
         }
+    }
+
+    /// Port-53 evidence for the relay heuristic above, accepting the
+    /// number and text spellings on both the local port and the remote
+    /// `settings.port`.
+    private static func looksLikeDNSRelay(_ entry: XrayJSONObject) -> Bool {
+        let local: XrayJSONValue? = entry["port"]
+        let remote: XrayJSONValue? = entry["settings"]?.objectValue?["port"]
+        for value in [local, remote] {
+            if value?.intValue == 53 { return true }
+            if value?.stringValue == "53" { return true }
+        }
+        // No `settings` at all: nothing to redirect with, so the DNS
+        // use is the only one left — but a settings-carrying inbound
+        // to any other port is a redirect, not a relay.
+        return entry["settings"] == nil
     }
 
     private func log(_ message: String) {

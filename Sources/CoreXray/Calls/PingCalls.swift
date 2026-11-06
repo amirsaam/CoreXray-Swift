@@ -57,7 +57,8 @@ internal final class PingCalls {
         }
         let encoder = JSONEncoder()
         let decoder = JSONDecoder()
-        return rawOutcomes.map { element in
+        var parsedAny = false
+        let results: [XrayPingResult] = rawOutcomes.map { element in
             let data: Data
             do {
                 data = try encoder.encode(element)
@@ -71,6 +72,7 @@ internal final class PingCalls {
                 )
             }
             if let result = try? decoder.decode(XrayPingResult.self, from: data) {
+                parsedAny = true
                 return result
             }
             // Client-side fallback marker: synthesized locally, so the
@@ -82,6 +84,15 @@ internal final class PingCalls {
                 failureReason: "client fallback — the engine answered with an undecodable measurement"
             )
         }
+        // Zero parseable out of N is not N dead servers — it is a schema
+        // the client no longer reads. Synthesizing failures would report
+        // live servers as down; throw with both causes instead.
+        guard parsedAny else {
+            throw XrayError.bridgeFailed(
+                "ping answers undecodable (strict: \(strictError.map { "\($0)" } ?? "none"); raw: no element parsed as a measurement)"
+            )
+        }
+        return results
     }
 }
 

@@ -51,19 +51,22 @@ extension Xray {
     /// call: conversion/wrapping plus local inbounds and sections, no
     /// struct construction. A socks inbound on `socksPort` is included by default (matching the native
     /// apps); pass nil to leave it out, or a port for an HTTP inbound via
-    /// `httpPort`. Anything fancier — TUN, observatory, dnsRelay removal,
-    /// patches — still goes through `assembler(_:)`.
+    /// `httpPort`. The DNS relay ships by default (local queries need a
+    /// door); pass `dnsRelay: false` to drop it. Anything fancier — TUN,
+    /// observatory, patches — still goes through `assembler(_:)`.
     public func proxyConfiguration(
         _ source: XrayAssemblySource,
         remarks: String? = nil,
         socksPort: Int? = 10808,
         httpPort: Int? = nil,
+        dnsRelay: Bool = true,
         routing: XrayRouting? = nil,
         dns: XrayDNS? = nil,
         log: XrayLog? = nil,
         credentials: XrayCredentials? = nil,
         environment: [String: String]? = nil,
-        geoCheck: Bool = true
+        geoCheck: Bool = true,
+        diagnostics: ((String) -> Void)? = nil
     ) throws -> XrayConfig {
         if let socksPort { try Self.validPort(socksPort, name: "socks") }
         if let httpPort { try Self.validPort(httpPort, name: "http") }
@@ -71,12 +74,14 @@ extension Xray {
         assembly.remarks = remarks
         assembly.socks = socksPort.map { XrayAssemblySocksEntry(port: $0) }
         assembly.http = httpPort.map { XrayAssemblyHttpEntry(port: $0) }
+        if !dnsRelay { assembly.dnsRelay = nil }
         assembly.routing = routing
         assembly.dns = dns
         assembly.log = log
         assembly.credentials = credentials
         assembly.environment = environment
         assembly.geoCheck = geoCheck
+        assembly.diagnostics = diagnostics
         return try assembly.assemble()
     }
 }

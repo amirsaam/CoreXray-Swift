@@ -89,10 +89,11 @@ public final class XrayGeoDownloader: @unchecked Sendable {
 
     /// Downloads both databases into `directory`, creating it as needed
     /// and replacing same-named files — atomically: each file downloads
-    /// to a `.part` sibling and moves into place only after the bytes
-    /// land, so a kill between downloads never destroys the file that
-    /// was already good. Progress runs 0.0 to 1.0 across both files;
-    /// `onProgress` is called on the main actor and is optional.
+    /// to a uniquely-named staging sibling and moves into place only
+    /// after the bytes land, so a kill between downloads never destroys
+    /// the file that was already good. Progress runs 0.0 to 1.0 across
+    /// both files; `onProgress` is called on the main actor and is
+    /// optional.
     public func download(
         into directory: URL,
         geoIPURL: URL? = nil,
@@ -124,14 +125,16 @@ public final class XrayGeoDownloader: @unchecked Sendable {
 
     /// Downloads only the databases in `databases` that are missing or
     /// unreadable in `directory`, creating it as needed. Unlike
-    /// `download(into:)`, files already present are left alone and no
-    /// progress is reported — this is the upkeep path `ensureAssets`
+    /// `download(into:)`, files already present are left alone.
+    /// Progress across the fetched files runs 0.0 to 1.0 when
+    /// `onProgress` is set — this is the upkeep path `ensureAssets`
     /// uses, not the first-fetch path.
     func fetchMissing(
         _ databases: [XrayGeoDatabase],
         into directory: URL,
         geoIPURL: URL? = nil,
-        geoSiteURL: URL? = nil
+        geoSiteURL: URL? = nil,
+        onProgress: ((Double) -> Void)? = nil
     ) async throws {
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -148,15 +151,20 @@ public final class XrayGeoDownloader: @unchecked Sendable {
         guard !wanted.isEmpty else { return }
         let ipSource = geoIPURL ?? self.geoIPURL
         let siteSource = geoSiteURL ?? self.geoSiteURL
+        let tracker = ProgressTracker(report: onProgress)
         try await withThrowingTaskGroup(of: Void.self) { group in
             if wanted.contains(.geoip) {
                 group.addTask {
-                    try await self.fetch(from: ipSource, to: directory.appendingPathComponent("geoip.dat")) { _ in }
+                    try await self.fetch(from: ipSource, to: directory.appendingPathComponent("geoip.dat")) { fraction in
+                        tracker.setIP(fraction)
+                    }
                 }
             }
             if wanted.contains(.geosite) {
                 group.addTask {
-                    try await self.fetch(from: siteSource, to: directory.appendingPathComponent("geosite.dat")) { _ in }
+                    try await self.fetch(from: siteSource, to: directory.appendingPathComponent("geosite.dat")) { fraction in
+                        tracker.setSite(fraction)
+                    }
                 }
             }
             try await group.waitForAll()
@@ -171,62 +179,109 @@ public final class XrayGeoDownloader: @unchecked Sendable {
         progress: @Sendable @escaping (Double) -> Void
     ) async throws {
         // Atomic by construction: the previous good file stays in place
-        // until the new bytes fully land in the `.part` sibling. A kill
+        // until the new bytes fully land in a staging sibling. A kill
         // mid-download leaves the old database (or nothing at all),
         // never a truncated one the gate would then refuse.
-        let staging = destination.appendingPathExtension("part")
-        try? FileManager.default.removeItem(at: staging)
+        //
+        // The staging name is unique per call: two concurrent fetches of
+        // the same destination (two sessions bootstrapping one directory)
+        // stage side by side and serialize only at the replace step, so
+        // neither fails on the other's staging file. Last writer wins;
+        // both wrote bytes that passed the same gate, so either outcome
+        // is a good database. Stale staging siblings from a kill are
+        // swept below, best effort.
+        Self.sweepStagingSiblings(of: destination)
+        let staging = destination.appendingPathExtension("part-\(UUID().uuidString.prefix(8))")
         let current = DownloadTaskBox()
-        return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
-                var observation: NSKeyValueObservation?
-                let task = urlSession.downloadTask(with: URLRequest(url: url)) { tempURL, response, error in
-                    observation?.invalidate()
-                    if let error {
-                        // A caller cancel surfaces as cooperative
-                        // cancellation, never a download failure.
-                        if (error as NSError).code == NSURLErrorCancelled {
-                            continuation.resume(throwing: CancellationError())
-                        } else {
-                            continuation.resume(throwing: error)
+        do {
+            return try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { continuation in
+                    var observation: NSKeyValueObservation?
+                    let task = urlSession.downloadTask(with: URLRequest(url: url)) { tempURL, response, error in
+                        observation?.invalidate()
+                        if let error {
+                            continuation.resume(throwing: Self.downloadError(error, url: url))
+                            return
                         }
-                        return
-                    }
-                    guard let response = response as? HTTPURLResponse, response.statusCode == 200 else {
-                        continuation.resume(throwing: URLError(.badServerResponse))
-                        return
-                    }
-                    guard let tempURL else {
-                        continuation.resume(throwing: URLError(.cannotCreateFile))
-                        return
-                    }
-                    do {
-                        try FileManager.default.moveItem(at: tempURL, to: staging)
-                        // The old file is removed only after the new one is
-                        // staged — and under the lock, so a concurrent
-                        // fetch of the same file never interleaves a
-                        // remove between another's stage and move.
-                        try Self.replaceLock.withLock {
-                            try? FileManager.default.removeItem(at: destination)
-                            try FileManager.default.moveItem(at: staging, to: destination)
+                        guard let response = response as? HTTPURLResponse, response.statusCode == 200 else {
+                            let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+                            continuation.resume(throwing: XrayError.bridgeFailed(
+                                "download of \(url.absoluteString) failed with HTTP \(code)"))
+                            return
                         }
-                        continuation.resume()
-                    } catch {
-                        continuation.resume(throwing: error)
+                        guard let tempURL else {
+                            continuation.resume(throwing: XrayError.bridgeFailed(
+                                "download of \(url.absoluteString) finished without a file"))
+                            return
+                        }
+                        do {
+                            try FileManager.default.moveItem(at: tempURL, to: staging)
+                            // The old file is removed only after the new one is
+                            // staged — and under the lock, so a concurrent
+                            // fetch of the same file never interleaves a
+                            // remove between another's stage and move.
+                            try Self.replaceLock.withLock {
+                                try? FileManager.default.removeItem(at: destination)
+                                try FileManager.default.moveItem(at: staging, to: destination)
+                            }
+                            continuation.resume()
+                        } catch {
+                            continuation.resume(throwing: Self.downloadError(error, url: url))
+                        }
                     }
+                    observation = task.progress.observe(\.fractionCompleted) { value, _ in
+                        Task { @MainActor in progress(value.fractionCompleted) }
+                    }
+                    current.task = task
+                    // Already cancelled while setting up: stop before leaving
+                    // a download running that nobody awaits.
+                    if Task.isCancelled { task.cancel() }
+                    task.resume()
                 }
-                observation = task.progress.observe(\.fractionCompleted) { value, _ in
-                    Task { @MainActor in progress(value.fractionCompleted) }
-                }
-                current.task = task
-                // Already cancelled while setting up: stop before leaving
-                // a download running that nobody awaits.
-                if Task.isCancelled { task.cancel() }
-                task.resume()
+            } onCancel: {
+                current.task?.cancel()
             }
-        } onCancel: {
-            current.task?.cancel()
+        } catch {
+            // Our own staging sibling never survives a failure: without
+            // cleanup every failed night would leave another orphan.
+            try? FileManager.default.removeItem(at: staging)
+            throw error
         }
+    }
+
+    /// Removes staging siblings `<name>.dat.part-*` left by a killed
+    /// download. Best effort: a directory we cannot list is not worth
+    /// failing the download over.
+    private static func sweepStagingSiblings(of destination: URL) {
+        let directory = destination.deletingLastPathComponent()
+        let prefix = destination.lastPathComponent + ".part-"
+        guard let items = try? FileManager.default.contentsOfDirectory(atPath: directory.path) else { return }
+        for item in items where item.hasPrefix(prefix) {
+            try? FileManager.default.removeItem(at: directory.appendingPathComponent(item))
+        }
+    }
+
+    /// Translates transport and filesystem failures into the package's
+    /// error type: timeouts surface as `.timedOut`, everything else as
+    /// `.bridgeFailed` naming the URL. `XrayError` and cooperative
+    /// cancellation pass through untouched — a caller cancel is never a
+    /// download failure.
+    private static func downloadError(_ error: Error, url: URL) -> Error {
+        if error is CancellationError { return error }
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .cancelled:
+                return CancellationError()
+            case .timedOut:
+                return XrayError.timedOut("download of \(url.absoluteString) timed out")
+            default:
+                return XrayError.bridgeFailed(
+                    "download of \(url.absoluteString) failed: \(urlError.localizedDescription)")
+            }
+        }
+        if error is XrayError { return error }
+        return XrayError.bridgeFailed(
+            "download of \(url.absoluteString) failed: \(error.localizedDescription)")
     }
 }
 
@@ -538,9 +593,16 @@ private final class ProgressTracker: @unchecked Sendable {
         if let ip { self.ip = ip }
         if let site { self.site = site }
         let total = (self.ip + self.site) / 2
+        // KVO fraction updates fire per packet — reporting every one
+        // would hop to the main actor hundreds of times per second for
+        // a number the UI rounds to a percent. Report on 1% movement
+        // and always on completion.
+        let shouldReport = total >= 1.0 || abs(total - lastReported) >= 0.01
+        if shouldReport { lastReported = total }
         lock.unlock()
-        report?(total)
+        if shouldReport { report?(total) }
     }
+    private var lastReported: Double = 0
 }
 
 // MARK: - Geo asset gate

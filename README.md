@@ -217,7 +217,8 @@ try Xray.shared.proxyConfiguration(
     log: nil,            // verbatim log section; nil leaves it out
     credentials: nil,   // guards the SOCKS entry; nil leaves it open
     environment: nil,   // merged into the document's env
-    geoCheck: true      // fail when referenced geo files are missing
+    geoCheck: true,     // fail when referenced geo files are missing
+    dnsRelay: true      // local DNS door on 127.0.0.1; false drops it
 )
 
 // Full control: tune the assembly, then assemble it.
@@ -470,9 +471,9 @@ Notes on the pieces:
   already define one. Fields: `destOverride` (default
   `["http", "tls", "quic", "fakedns"]`), `enabled` (default true),
   `routeOnly` (default false), `domainsExcluded` (default empty),
-  `metadataOnly` (default false), plus `probeURL` (default nil: snippet
-  probing only) and `enableConcurrency` (default nil: engine default).
-  Inbounds with their own settings keep them.
+  `metadataOnly` (default false). Inbounds with their own settings keep
+  them. (`probeURL` / `enableConcurrency` are `XrayObservatory` fields,
+  not sniffing — see the traffic section.)
 - `transform` mutates the parsed configuration in place and (like
   `assembly.patch`, which holds the same last position) overrules
   everything, including sniffing and routing. It works on a typed
@@ -666,7 +667,7 @@ Xray.shared.ping(_ targets: [XrayPingTarget], options: XrayPingOptions? = nil) t
 Xray.shared.decodeSubscription(_ text: String, ageSecret: String? = nil) throws -> String
 Xray.shared.generateAgeKeyPair(kind: .x25519) throws -> XrayAgeKeyPair
 Xray.shared.writeGeoInventory(database: String, kind: XrayGeoDatabase, in: URL) throws -> URL
-Xray.shared.proxyConfiguration(_ source: XrayAssemblySource, remarks: String? = nil, socksPort: Int? = 10808, httpPort: Int? = nil, routing: XrayRouting? = nil, dns: XrayDNS? = nil, log: XrayLog? = nil, credentials: XrayCredentials? = nil, environment: [String: String]? = nil, geoCheck: Bool = true) throws -> XrayConfig
+Xray.shared.proxyConfiguration(_ source: XrayAssemblySource, remarks: String? = nil, socksPort: Int? = 10808, httpPort: Int? = nil, dnsRelay: Bool = true, routing: XrayRouting? = nil, dns: XrayDNS? = nil, log: XrayLog? = nil, credentials: XrayCredentials? = nil, environment: [String: String]? = nil, geoCheck: Bool = true, diagnostics: ((String) -> Void)? = nil) throws -> XrayConfig
 ```
 
 - `version()` answers, for example, "26.10.29", the Xray-core build compiled

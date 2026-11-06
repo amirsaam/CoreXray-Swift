@@ -116,6 +116,10 @@ extension Xray {
         XrayDNS(hosts: hosts, queryStrategy: queryStrategy, servers: servers)
     }
 
+    /// One fake-DNS pool. Traps on a non-positive `poolSize`: that is a
+    /// programmer error (an empty pool can never resolve), not a
+    /// runtime condition. The CIDR shape of `ipPool` is unchecked until
+    /// launch — a malformed pool fails in the engine, not here.
     public func fakeDNS(ipPool: String, poolSize: Int) -> XrayFakeDNS {
         precondition(poolSize > 0, "fakeDNS poolSize must be positive: it sizes the pool in addresses")
         return XrayFakeDNS(ipPool: ipPool, poolSize: poolSize)

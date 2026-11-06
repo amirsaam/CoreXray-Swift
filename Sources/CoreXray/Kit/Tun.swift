@@ -130,10 +130,13 @@ public struct XrayTunEntry: Sendable {
     }
 
     /// Merges this entry's descriptor into the document's `env` as
-    /// `xray.tun.fd`, preserving keys already there. Pure document
-    /// work: without a descriptor nothing is written and nothing is
-    /// cleared. Clearing a stale descriptor left in the process by an
-    /// earlier TUN session happens at launch, not here — the engine
+    /// `xray.tun.fd`. A key already there wins and is never
+    /// overwritten: the document is the caller's explicit statement,
+    /// and an entry stomping a persisted descriptor would be the
+    /// opposite of the merge rule every other stage follows. Pure
+    /// document work: without a descriptor nothing is written and
+    /// nothing is cleared. Clearing a stale descriptor left in the
+    /// process by an earlier TUN session happens at launch, not here — the engine
     /// applies document `env` into its process at start and never
     /// unsets, so a stale descriptor would hijack the next fd-less
     /// launch into reading a dead fd instead of creating its own
@@ -141,7 +144,9 @@ public struct XrayTunEntry: Sendable {
     func applyEnvironment(to config: inout XrayJSONObject) {
         guard let fileDescriptor else { return }
         var env = config["env"]?.objectValue ?? [:]
-        env["xray.tun.fd"] = .string("\(fileDescriptor)")
+        if env["xray.tun.fd"] == nil {
+            env["xray.tun.fd"] = .string("\(fileDescriptor)")
+        }
         config["env"] = .object(env)
     }
 
@@ -154,7 +159,9 @@ public struct XrayTunEntry: Sendable {
 
 // Value factory for the TUN entry. A negative file descriptor, a
 // non-positive MTU, or an explicitly empty interface name is rejected
-// here instead of failing obscurely inside the engine. Stderr and fd 0
+// here instead of failing obscurely inside the engine. The check runs
+// at construction: the returned value stays mutable, so a descriptor
+// changed afterwards is on the caller. Stderr and fd 0
 // are the caller's responsibility to avoid: fd 0 is standard input, and
 // a TUN entry inheriting it would hand the packet reader a pipe that is
 // not a tunnel.

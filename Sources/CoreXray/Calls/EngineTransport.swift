@@ -57,8 +57,12 @@ internal final class EngineTransport {
     /// the engine owns its stuck goroutine.
     internal static func rawCall(_ request: String) throws -> String {
         try guardRequestSize(request)
+        // One pass: the byte buffer is built once and handed over
+        // NUL-terminated, instead of counting the UTF-8 length and
+        // then copying it into a second buffer.
+        var bytes = Array(request.utf8)
+        bytes.append(0)
         return try lane.sync {
-            var bytes = Array(request.utf8CString)
             guard let response = CGoInvoke(&bytes) else {
                 throw XrayError.bridgeFailed("the engine bridge returned no response: the engine may not be loaded")
             }
@@ -94,15 +98,48 @@ internal final class EngineTransport {
 
     /// Parses a raw engine response into its envelope. The decode cause
     /// is kept in the message: "unreadable" alone never says which key
-    /// broke shape.
+    /// broke shape. Depth-checked first: the payload decodes
+    /// recursively, so a hostile nesting depth (a thousand open braces
+    /// in a row) would exhaust the stack — an uncatchable crash no
+    /// error type can report. Legitimate engine answers nest a dozen
+    /// deep at most; anything past 128 is an attack or corruption, and
+    /// is rejected before decoding starts.
     internal static func envelope<Payload: Decodable>(
         of response: String,
         as type: Payload.Type
     ) throws -> Xray.EngineEnvelope<Payload> {
+        try checkNestingDepth(of: response)
         do {
             return try JSONDecoder().decode(Xray.EngineEnvelope<Payload>.self, from: Data(response.utf8))
         } catch {
             throw XrayError.bridgeFailed("engine answered with an unreadable envelope: \(error.localizedDescription)")
+        }
+    }
+
+    /// One cheap pass over the response text counting object/array
+    /// nesting outside strings. String-aware (escapes honored), so a
+    /// brace inside a quoted value never counts.
+    private static func checkNestingDepth(of response: String, limit: Int = 128) throws {
+        var depth = 0
+        var inString = false
+        var escaped = false
+        for byte in response.utf8 {
+            if inString {
+                if escaped { escaped = false }
+                else if byte == 0x5C { escaped = true }
+                else if byte == 0x22 { inString = false }
+                continue
+            }
+            switch byte {
+            case 0x22: inString = true
+            case 0x7B, 0x5B:
+                depth += 1
+                if depth > limit {
+                    throw XrayError.bridgeFailed("engine answered with JSON nested past \(limit) levels: refusing to decode what would exhaust the stack")
+                }
+            case 0x7D, 0x5D: depth = max(0, depth - 1)
+            default: break
+            }
         }
     }
 
@@ -143,13 +180,28 @@ internal final class EngineTransport {
     }
 
     /// Runs a status-only operation, checking the envelope for success.
+    /// The `data` body decodes as an optional value the caller
+    /// discards: the Go side has answered success with missing, null,
+    /// object, and scalar `data` across versions, and a scalar body is
+    /// still a successful operation — so only `success`/`error` decide,
+    /// and no body shape can fail the call.
     internal static func acknowledge(_ method: Xray.Method) throws {
-        _ = try ask(method, as: Xray.EngineEnvelopeNoPayload.self)
+        try resolvedStatus(envelope: envelope(of: try send(method), as: XrayJSONValue?.self))
     }
 
     /// Runs a status-only operation with a payload, checking the envelope.
     internal static func acknowledge<Sent: Encodable>(_ method: Xray.Method, payload: Sent) throws {
-        _ = try ask(method, payload: payload, as: Xray.EngineEnvelopeNoPayload.self)
+        try resolvedStatus(envelope: envelope(of: try send(method, payload: payload), as: XrayJSONValue?.self))
+    }
+
+    /// Unwraps a status envelope: engine-reported failure raises
+    /// `XrayError`, success returns. Never reads the body, so no body
+    /// shape can fail a call the engine reported as successful.
+    internal static func resolvedStatus<Payload: Decodable>(envelope: Xray.EngineEnvelope<Payload>) throws {
+        guard envelope.succeeded else {
+            let message = envelope.failure.flatMap { $0.isEmpty ? nil : $0 }
+            throw XrayError.engineFailed(message ?? "engine failure with no message")
+        }
     }
 
     /// Serializes a JSON tree to compact text, keys sorted so two builds of
@@ -202,23 +254,6 @@ extension Xray {
             case succeeded = "success"
             case payload = "data"
             case failure = "error"
-        }
-    }
-
-    /// Stand-in payload for operations that only report success or
-    /// failure. Decodes tolerantly: a status operation's answer carries
-    /// a `data` shape the caller discards, and the Go side has answered
-    /// with missing, null, object, and scalar `data` across versions —
-    /// a scalar body is still a successful operation, not a broken
-    /// envelope, so anything decodes and `resolved` decides.
-    internal struct EngineEnvelopeNoPayload: Decodable, Sendable {
-        init(from decoder: any Decoder) throws {
-            let container = try decoder.container(keyedBy: CodingKeys.self)
-            _ = try? container.decode(XrayJSONValue.self, forKey: .data)
-        }
-
-        enum CodingKeys: String, CodingKey {
-            case data
         }
     }
 

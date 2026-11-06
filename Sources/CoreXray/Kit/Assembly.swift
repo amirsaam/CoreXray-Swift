@@ -210,6 +210,11 @@ public struct XrayAssembly {
     /// you checked the databases yourself — references the engine cannot
     /// resolve fail at traffic time, not at launch.
     public var geoCheck: Bool
+    /// Where assembly's routing warnings go (unknown outbound tags,
+    /// match-alls starving `final`). Assembly builds on a throwaway
+    /// session, so without this the warnings die with it — with it,
+    /// they reach your log. Nil (default) drops them.
+    public var diagnostics: ((String) -> Void)?
     /// Final patch after everything else — it sees the fully assembled
     /// document, so it overrules every setting above, including sniffing
     /// and routing. Same position as the low-level transform, for
@@ -233,6 +238,7 @@ public struct XrayAssembly {
         credentials: XrayCredentials? = nil,
         environment: [String: String]? = nil,
         geoCheck: Bool = true,
+        diagnostics: ((String) -> Void)? = nil,
         patch: ((inout XrayJSONObject) -> Void)? = nil
     ) {
         self.source = source
@@ -251,6 +257,7 @@ public struct XrayAssembly {
         self.credentials = credentials
         self.environment = environment
         self.geoCheck = geoCheck
+        self.diagnostics = diagnostics
         self.patch = patch
     }
 
@@ -263,6 +270,7 @@ public struct XrayAssembly {
         let remarks = self.remarks
         let sniffing = self.sniffing
         let patch = self.patch
+        let diagnostics = self.diagnostics
         let pipelineSource: XrayConfigSource
         switch source {
         case .shareLinks(let text):
@@ -270,7 +278,11 @@ public struct XrayAssembly {
         case .outboundJson(let text):
             pipelineSource = .json(try Self.wrapOutbound(text))
         }
-        return try XraySession().build(pipelineSource, options: XraySessionOptions(
+        let session = XraySession()
+        // Assembly builds on a throwaway session: without this, the
+        // pipeline's routing warnings would die with it.
+        session.logger = diagnostics
+        return try session.build(pipelineSource, options: XraySessionOptions(
             sniffing: sniffing,
             transform: { dict in
                 // Append: conversion emits no inbounds, and the TUN
@@ -344,7 +356,9 @@ public struct XrayAssembly {
 }
 
 // Value factories for local inbound entries. Ports are checked here so a
-// typo fails fast instead of surfacing as an engine bind error.
+// typo fails fast instead of surfacing as an engine bind error. The
+// check runs at construction: the returned values stay mutable, so a
+// port changed afterwards is on the caller — re-check it before launch.
 extension Xray {
     public func socksEntry(
         tag: String = "socks-in",

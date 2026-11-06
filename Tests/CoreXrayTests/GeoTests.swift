@@ -168,9 +168,9 @@ final class GeoTests: XCTestCase {
         defer { unsetenv("xray.location.asset") }
         let session = XraySession()
         let routing = XrayRouting(rules: [
-            .init(domains: ["example.com"], destination: .proxy),
+            .init(domains: ["example.com"], destination: .direct),
             .init(ips: ["10.0.0.0/8"], destination: .direct),
-        ], final: .proxy)
+        ], final: .direct)
         _ = try session.build(.json(routableJSON), options: .init(routing: routing))
     }
 

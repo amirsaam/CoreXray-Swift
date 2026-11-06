@@ -303,6 +303,18 @@ public struct XrayTrafficMonitor: Sendable {
         self.timeoutSeconds = timeoutSeconds
     }
 
+    /// Rejects `host:port` shapes before bracketing confuses them with
+    /// an IPv6 literal: the port belongs in `port`, not in `host`.
+    /// Shared by `snapshot()` and the factory, so a bad host fails at
+    /// construction, not on the first poll.
+    static func checkHostShape(_ host: String) throws {
+        let parts = host.split(separator: ":", omittingEmptySubsequences: false)
+        if (host.hasPrefix("[") && host.contains("]:")) ||
+            (!host.hasPrefix("[") && host.contains(":") && parts.count == 2 && parts.last?.allSatisfy(\.isNumber) == true) {
+            throw XrayError.invalidInput("metrics host \(host) includes a port: pass the bare host and put the port in `port`")
+        }
+    }
+
     public func snapshot() async throws -> XrayTrafficSnapshot {
         guard (1 ... 65_535).contains(port) else {
             throw XrayError.invalidInput("metrics port \(port) is outside 1...65535")
@@ -311,13 +323,7 @@ public struct XrayTrafficMonitor: Sendable {
         // stamps, and stamping after the read would silently drop the
         // request latency from sub-second polls.
         let taken = Date()
-        // Reject host:port shapes before bracketing confuses them with
-        // an IPv6 literal: the port belongs in `port`, not in `host`.
-        let parts = host.split(separator: ":", omittingEmptySubsequences: false)
-        if (host.hasPrefix("[") && host.contains("]:")) ||
-            (!host.hasPrefix("[") && host.contains(":") && parts.count == 2 && parts.last?.allSatisfy(\.isNumber) == true) {
-            throw XrayError.invalidInput("metrics host \(host) includes a port: pass the bare host and put the port in `port`")
-        }
+        try Self.checkHostShape(host)
         // Bracket bare IPv6 literals, or the port after the final colon
         // reads as part of the address and URL formation fails.
         let hostPart = host.contains(":") && !host.hasPrefix("[") ? "[\(host)]" : host
@@ -641,6 +647,7 @@ extension Xray {
         guard !host.isEmpty else {
             throw XrayError.invalidInput("traffic monitor host must not be empty")
         }
+        try XrayTrafficMonitor.checkHostShape(host)
         guard timeoutSeconds > 0 else {
             throw XrayError.invalidInput("traffic monitor timeoutSeconds must be positive, got \(timeoutSeconds)")
         }
