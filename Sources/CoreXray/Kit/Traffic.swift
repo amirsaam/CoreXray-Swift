@@ -284,7 +284,7 @@ public struct XrayTrafficDelta: Sendable {
 /// let monitor = try Xray.shared.trafficMonitor(port: 10085)
 /// var previous = try await monitor.snapshot()
 /// while session alive {
-///     try await Task.sleep(for: .seconds(1))
+///     try await Task.sleep(nanoseconds: 1_000_000_000)
 ///     let now = try await monitor.snapshot()
 ///     let speed = now.delta(since: previous) // uplinkPerSecond / downlinkPerSecond
 ///     totals.up += speed.uplink
@@ -381,8 +381,8 @@ public struct XrayTrafficMonitor: Sendable {
 /// `stop` from one serial context.
 public final class XrayTrafficWatchdog: @unchecked Sendable {
     private let monitor: XrayTrafficMonitor
-    private let interval: Duration
-    private let stalledAfter: Duration
+    private let interval: TimeInterval
+    private let stalledAfter: TimeInterval
     private let onStall: @Sendable () -> Void
     private let lock = NSLock()
     private var task: Task<Void, Never>?
@@ -395,15 +395,15 @@ public final class XrayTrafficWatchdog: @unchecked Sendable {
     internal init(
         port: Int,
         host: String,
-        interval: Duration,
-        stalledAfter: Duration,
+        interval: TimeInterval,
+        stalledAfter: TimeInterval,
         timeoutSeconds: Double = 5,
         onStall: @escaping @Sendable () -> Void
     ) throws {
         guard (1 ... 65_535).contains(port) else {
             throw XrayError.invalidInput("metrics port \(port) is outside 1...65535")
         }
-        guard interval >= .milliseconds(10) else {
+        guard interval >= 0.01 else {
             throw XrayError.invalidInput("traffic watchdog interval must be at least 10ms: sub-millisecond polling is socket churn that starves the poll loop it measures")
         }
         guard stalledAfter >= interval else {
@@ -459,10 +459,13 @@ public final class XrayTrafficWatchdog: @unchecked Sendable {
     private func run(epoch: Int) async {
         func current() -> Bool { lock.withLock { epoch == self.epoch } }
         var last = try? await monitor.snapshot()
-        var lastAdvance = ContinuousClock.now
+        // `ContinuousClock` needs iOS 16; `systemUptime` is monotonic
+        // back to iOS 4, and a stall clock must never jump with the wall
+        // clock anyway.
+        var lastAdvance = ProcessInfo.processInfo.systemUptime
         var fired = false
         while !Task.isCancelled, current() {
-            try? await Task.sleep(for: interval)
+            try? await Task.sleep(nanoseconds: trafficSleepNanoseconds(interval))
             guard !Task.isCancelled, current() else { return }
             // A failed snapshot counts the same as a stale one: the
             // endpoint answering nothing is the stall, whether the
@@ -477,7 +480,7 @@ public final class XrayTrafficWatchdog: @unchecked Sendable {
                     // not a stall. Only exactly-equal totals mean silence.
                     // Saturating sides only: totals wrap nothing anymore.
                     if now.uplink != previous.uplink || now.downlink != previous.downlink {
-                        lastAdvance = ContinuousClock.now
+                        lastAdvance = ProcessInfo.processInfo.systemUptime
                         fired = false
                     }
                 } else {
@@ -485,11 +488,11 @@ public final class XrayTrafficWatchdog: @unchecked Sendable {
                     // first data, not at start(). A metrics endpoint that
                     // is still coming up must not read as a stall before
                     // it ever answered.
-                    lastAdvance = ContinuousClock.now
+                    lastAdvance = ProcessInfo.processInfo.systemUptime
                 }
                 last = now
             }
-            if !fired, ContinuousClock.now - lastAdvance >= stalledAfter {
+            if !fired, ProcessInfo.processInfo.systemUptime - lastAdvance >= stalledAfter {
                 fired = true
                 onStall()
             }
@@ -506,8 +509,8 @@ extension Xray {
     public func trafficWatchdog(
         port: Int,
         host: String = "127.0.0.1",
-        interval: Duration = .seconds(10),
-        stalledAfter: Duration = .seconds(60),
+        interval: TimeInterval = 10,
+        stalledAfter: TimeInterval = 60,
         timeoutSeconds: Double = 5,
         onStall: @escaping @Sendable () -> Void
     ) throws -> XrayTrafficWatchdog {
@@ -524,6 +527,13 @@ private func saturatingSum(_ values: [Int64]) -> Int64 {
         let (sum, overflow) = total.addingReportingOverflow(next)
         return overflow ? .max : sum
     }
+}
+
+// Seconds to nanoseconds for `Task.sleep(nanoseconds:)`, the sleep that
+// goes back to iOS 13 (`Task.sleep(for:)` needs iOS 16). Same clamp as
+// the session's copy: negatives become zero, absurd values saturate.
+private func trafficSleepNanoseconds(_ seconds: TimeInterval) -> UInt64 {
+    UInt64(min(max(seconds, 0), 1e9) * 1_000_000_000)
 }
 
 // MARK: - Wire decoding (tolerant: the endpoint also serves Go runtime keys)

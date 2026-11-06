@@ -100,7 +100,7 @@ let opts = engine.options(
 )
 let issues = try session.preflightIssues(.json(config.json), options: opts)
 guard issues.isEmpty else { throw ProviderError.misconfigured(issues) }
-try await session.start(config, options: opts, deadline: .seconds(20))
+try await session.start(config, options: opts, deadline: 20)
 ```
 
 Notes that bite in production:

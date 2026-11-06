@@ -219,7 +219,7 @@ final class SessionTests: XCTestCase {
         session.launchOverride = { _ in }
         defer { session.launchOverride = nil }
         try await session.start(
-            .json(minimalJSON), options: .init(tun: XrayTunEntry()), deadline: .seconds(10)
+            .json(minimalJSON), options: .init(tun: XrayTunEntry()), deadline: 10
         )
         XCTAssertNil(getenv("xray.tun.fd"))
         XCTAssertNil(getenv("XRAY_TUN_FD"))

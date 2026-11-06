@@ -99,7 +99,7 @@ final class SupervisionTests: XCTestCase {
         let port = try Xray.shared.findAvailablePorts()[0]
         let fired = XCTestExpectation(description: "stall fires on a dead endpoint")
         let watchdog = try Xray.shared.trafficWatchdog(
-            port: port, interval: .milliseconds(200), stalledAfter: .seconds(1)
+            port: port, interval: 0.2, stalledAfter: 1
         ) { fired.fulfill() }
         watchdog.start()
         defer { watchdog.stop() }
@@ -114,7 +114,7 @@ final class SupervisionTests: XCTestCase {
         defer { try? session.stop() }
         let fired = XCTestExpectation(description: "stall fires on an idle engine")
         let watchdog = try Xray.shared.trafficWatchdog(
-            port: port, interval: .milliseconds(200), stalledAfter: .seconds(1)
+            port: port, interval: 0.2, stalledAfter: 1
         ) { fired.fulfill() }
         watchdog.start()
         defer { watchdog.stop() }

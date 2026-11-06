@@ -47,7 +47,7 @@ final class AuditFixTests: XCTestCase {
 
     func testDeadlineStartSucceeds() async throws {
         let session = Xray.shared.newSession()
-        try await session.start(.json(minimalJSON), deadline: .seconds(30))
+        try await session.start(.json(minimalJSON), deadline: 30)
         XCTAssertTrue(try session.isRunning())
         try session.stop()
     }
@@ -263,7 +263,7 @@ final class AuditFixTests: XCTestCase {
         fired.expectedFulfillmentCount = 1
         fired.assertForOverFulfill = true
         let watchdog = try Xray.shared.trafficWatchdog(
-            port: port, interval: .milliseconds(20), stalledAfter: .milliseconds(200)
+            port: port, interval: 0.02, stalledAfter: 0.2
         ) { fired.fulfill() }
         watchdog.start()
         watchdog.start()
@@ -282,7 +282,7 @@ final class AuditFixTests: XCTestCase {
         session.launchOverride = { _ in _ = release.wait(timeout: .now() + 30) }
         defer { session.launchOverride = nil }
         do {
-            try await session.start(.json(minimalJSON), deadline: .milliseconds(50))
+            try await session.start(.json(minimalJSON), deadline: 0.05)
             XCTFail("expected .timedOut")
         } catch let error as XrayError {
             guard case .timedOut = error else {

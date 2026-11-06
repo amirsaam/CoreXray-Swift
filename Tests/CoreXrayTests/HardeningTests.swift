@@ -68,10 +68,10 @@ final class HardeningTests: XCTestCase {
     func testWatchdogRejectsNonPositiveCadence() throws {
         let port = try shared.findAvailablePorts()[0]
         XCTAssertThrowsError(
-            try shared.trafficWatchdog(port: port, interval: .zero, onStall: {})
+            try shared.trafficWatchdog(port: port, interval: 0, onStall: {})
         )
         XCTAssertThrowsError(
-            try shared.trafficWatchdog(port: port, stalledAfter: .zero, onStall: {})
+            try shared.trafficWatchdog(port: port, stalledAfter: 0, onStall: {})
         )
     }
 
@@ -168,7 +168,7 @@ final class HardeningTests: XCTestCase {
         let task = Task {
             try await session.start(
                 remoteSubscription: feed,
-                deadline: .seconds(30),
+                deadline: 30,
                 timeoutSeconds: 30
             )
         }
@@ -328,7 +328,7 @@ final class HardeningTests: XCTestCase {
         // and no file is touched — only the path adoption is exercised.
         try await session.start(
             .json(#"{"log":{"error":"stderr"},"inbounds":[],"outbounds":[]}"#),
-            deadline: .seconds(5)
+            deadline: 5
         )
         XCTAssertThrowsError(try session.recentEngineLogs(.error)) { error in
             guard case XrayError.invalidInput(let message) = error else {
@@ -347,7 +347,7 @@ final class HardeningTests: XCTestCase {
         }
         try await session.start(
             .json(#"{"log":{"error":"/tmp/does-not-exist-corexray.log"},"inbounds":[],"outbounds":[]}"#),
-            deadline: .seconds(5)
+            deadline: 5
         )
         // A recorded-but-missing file fails at the read, proving the
         // path survived `filePath` — unlike a stream name.
@@ -471,7 +471,7 @@ final class HardeningTests: XCTestCase {
             try? Xray.shared.stop()
         }
         do {
-            try await first.start(.json(minimalJSON), deadline: .milliseconds(50))
+            try await first.start(.json(minimalJSON), deadline: 0.05)
             XCTFail("expected a timeout")
         } catch let error as XrayError {
             guard case .timedOut = error else {
@@ -485,7 +485,7 @@ final class HardeningTests: XCTestCase {
         // parked cleanup stands down against the newer instance.
         release.signal()
         XCTAssertTrue(try shared.isRunning())
-        try await Task.sleep(for: .seconds(1))
+        try await Task.sleep(nanoseconds: 1_000_000_000)
         XCTAssertTrue(
             try shared.isRunning(),
             "the stale timeout cleanup killed the newer instance"
@@ -498,9 +498,9 @@ final class HardeningTests: XCTestCase {
         session.launchOverride = { _ in Thread.sleep(forTimeInterval: 5) }
         defer { session.launchOverride = nil }
         let task = Task {
-            try await session.start(.json(minimalJSON), deadline: .seconds(30))
+            try await session.start(.json(minimalJSON), deadline: 30)
         }
-        try await Task.sleep(for: .milliseconds(100))
+        try await Task.sleep(nanoseconds: 100_000_000)
         task.cancel()
         let waited = Date()
         do {
@@ -744,7 +744,7 @@ final class HardeningTests: XCTestCase {
     func testStartConfigWithOptionsAndDeadline() async throws {
         let config = try shared.configuration(.json(minimalJSON))
         let session = shared.newSession()
-        try await session.start(config, options: shared.options(), deadline: .seconds(30))
+        try await session.start(config, options: shared.options(), deadline: 30)
         XCTAssertTrue(try session.isRunning())
         try session.stop()
     }

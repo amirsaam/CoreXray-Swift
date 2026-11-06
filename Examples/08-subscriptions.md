@@ -61,7 +61,7 @@ try await session.start(
     ageSecret: ageSecretOrNil,
     assetDirectory: geoDir,
     options: engine.options(metricsPort: 24242),
-    deadline: .seconds(30),
+    deadline: 30,
     timeoutSeconds: 30
 )
 ```

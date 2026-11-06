@@ -694,6 +694,14 @@ public final class XraySession: @unchecked Sendable {
         }
     }
 
+    /// `Task.sleep(for:)` needs iOS 16; the nanosecond form goes back
+    /// to iOS 13, which this package still supports. Clamped: a negative
+    /// deadline becomes zero, an absurd one saturates instead of
+    /// trapping the `UInt64` conversion.
+    private static func nanoseconds(_ seconds: TimeInterval) -> UInt64 {
+        UInt64(min(max(seconds, 0), 1e9) * 1_000_000_000)
+    }
+
     /// First-wins latch for the deadline race below. Two detached tasks
     /// (the timer, the launch waiter) share one continuation, and
     /// continuations trap on a second resume — the gate lets exactly one
@@ -825,8 +833,8 @@ public final class XraySession: @unchecked Sendable {
     }
 
     /// Starts a source like `start(_:options:)`, but gives up if the
-    /// engine is not up within `deadline` and stops the half-started
-    /// instance before throwing. Use from providers, where the system
+    /// engine is not up within `deadline` (seconds) and stops the
+    /// half-started instance before throwing. Use from providers, where the system
     /// kills a start that overstays its time budget — a thrown error is
     /// recoverable, a watchdog kill is not.
     ///
@@ -844,7 +852,7 @@ public final class XraySession: @unchecked Sendable {
     public func start(
         _ source: XrayConfigSource,
         options: XraySessionOptions? = nil,
-        deadline: Duration
+        deadline: TimeInterval
     ) async throws {
         let config = try build(source, options: options)
         try replaceRunningInstance()
@@ -879,7 +887,7 @@ public final class XraySession: @unchecked Sendable {
                     box.continuation = continuation
                     box.timer = Task.detached { [weak self] in
                         do {
-                            try await Task.sleep(for: deadline)
+                            try await Task.sleep(nanoseconds: Self.nanoseconds(deadline))
                         } catch {
                             return // The launch won and cancelled us; nothing to do.
                         }
@@ -955,14 +963,14 @@ public final class XraySession: @unchecked Sendable {
         }
     }
 
-    /// Launches an assembled configuration under a deadline: the
-    /// rebuild recipe's resume form, holding the config plus the
+    /// Launches an assembled configuration under a deadline (seconds):
+    /// the rebuild recipe's resume form, holding the config plus the
     /// options it launched with. Forwards to
     /// `start(_:options:deadline:)` over the config's JSON.
     public func start(
         _ config: XrayConfig,
         options: XraySessionOptions? = nil,
-        deadline: Duration
+        deadline: TimeInterval
     ) async throws {
         try await start(.json(config.json), options: options, deadline: deadline)
     }
@@ -1164,7 +1172,7 @@ public final class XraySession: @unchecked Sendable {
         ageSecret: String? = nil,
         assetDirectory: URL? = nil,
         options: XraySessionOptions? = nil,
-        deadline: Duration = .seconds(30),
+        deadline: TimeInterval = 30,
         timeoutSeconds: TimeInterval = 30
     ) async throws {
         log("fetching subscription from \(url.host ?? url.path)")

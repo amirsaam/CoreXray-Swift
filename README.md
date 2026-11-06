@@ -415,7 +415,7 @@ try await session.validate(.json(savedJSON))
 // answers at all the throw still arrives on time, and the orphan self-stops
 // when (if) it ever finishes. Providers must use this (or the plain async
 // variant): the sync starts cannot be bounded.
-try await session.start(.shareLinks(pastedText), deadline: .seconds(20))
+try await session.start(.shareLinks(pastedText), deadline: 20)
 
 // One call for the whole provider start: fetch, unwrap, top up geo assets,
 // launch under a deadline. The feed is fetched fresh every call — nothing
@@ -730,7 +730,7 @@ Xray.shared.options(sniffing:transform:routing:credentials:tun:environment:obser
 Xray.shared.metrics(tag:port:) throws -> XrayMetrics
 Xray.shared.observatory(subjectSelector:probeURL:probeInterval:enableConcurrency:) throws -> XrayObservatory
 Xray.shared.trafficMonitor(port:host:timeoutSeconds:) throws -> XrayTrafficMonitor
-Xray.shared.trafficWatchdog(port:host:interval:stalledAfter:timeoutSeconds:onStall:) throws -> XrayTrafficWatchdog
+Xray.shared.trafficWatchdog(port:host:interval:stalledAfter:timeoutSeconds:onStall:) throws -> XrayTrafficWatchdog // interval/stalledAfter are TimeInterval seconds
 Xray.shared.pingTarget(config:outboundTag:) -> XrayPingTarget
 Xray.shared.pingOptions(timeoutSeconds:testURL:) throws -> XrayPingOptions
 Xray.shared.geoDownloader(geoIPURL:geoSiteURL:) -> XrayGeoDownloader
@@ -798,7 +798,7 @@ try session.start(config)
 let monitor = try Xray.shared.trafficMonitor(port: verifiedPort)
 var previous = try await monitor.snapshot()
 while running {
-    try await Task.sleep(for: .seconds(1))
+    try await Task.sleep(nanoseconds: 1_000_000_000)
     let now = try await monitor.snapshot()
     let speed = now.delta(since: previous)
     print(speed.upPerSecond, speed.downPerSecond)  // bytes/sec both ways
@@ -887,7 +887,7 @@ lately" — the primitive behind every reconnect loop:
 
 ```swift
 let watchdog = try Xray.shared.trafficWatchdog(
-    port: metricsPort, interval: .seconds(10), stalledAfter: .seconds(60)
+    port: metricsPort, interval: 10, stalledAfter: 60
 ) { Task { await rebuild() } }   // hop off: the callback must return fast
 watchdog.start()
 // ... later, when the session ends:
@@ -1007,7 +1007,7 @@ try await session.start(
     ageSecret: ageSecretOrNil,
     assetDirectory: dataDir,
     options: Xray.shared.options(metricsPort: verifiedPort),
-    deadline: .seconds(30),
+    deadline: 30,
     timeoutSeconds: 30
 )
 ```
@@ -1204,7 +1204,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         )
         let issues = try session.preflightIssues(.json(config.json), options: opts)
         guard issues.isEmpty else { throw ProviderError.misconfigured(issues) }
-        try await session.start(config, options: opts, deadline: .seconds(20))
+        try await session.start(config, options: opts, deadline: 20)
 
         // 5. Counters after launch; never a read-packets loop — the engine
         //    owns the fd and reads it itself.
@@ -1298,7 +1298,7 @@ gives you the three primitives; the app owns the loop:
    traffic or set the window generously:
 
    ```swift
-   let watchdog = try engine.trafficWatchdog(port: metricsPort, stalledAfter: .seconds(60)) {
+   let watchdog = try engine.trafficWatchdog(port: metricsPort, stalledAfter: 60) {
        Task { await rebuild() }   // hop off the watchdog's task
    }
    watchdog.start()

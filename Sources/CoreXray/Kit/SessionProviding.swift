@@ -16,14 +16,14 @@ public protocol XraySessionProviding {
     func start(rawJSON json: String) throws
     func start(contentsOf url: URL) throws
     func start(_ source: XrayConfigSource, options: XraySessionOptions?) async throws
-    func start(_ source: XrayConfigSource, options: XraySessionOptions?, deadline: Duration) async throws
-    func start(_ config: XrayConfig, options: XraySessionOptions?, deadline: Duration) async throws
+    func start(_ source: XrayConfigSource, options: XraySessionOptions?, deadline: TimeInterval) async throws
+    func start(_ config: XrayConfig, options: XraySessionOptions?, deadline: TimeInterval) async throws
     func start(
         remoteSubscription url: URL,
         ageSecret: String?,
         assetDirectory: URL?,
         options: XraySessionOptions?,
-        deadline: Duration,
+        deadline: TimeInterval,
         timeoutSeconds: TimeInterval
     ) async throws
     func validate(_ source: XrayConfigSource, options: XraySessionOptions?) throws
@@ -52,7 +52,7 @@ extension XraySessionProviding {
         try await start(source, options: nil)
     }
 
-    public func start(_ source: XrayConfigSource, deadline: Duration) async throws {
+    public func start(_ source: XrayConfigSource, deadline: TimeInterval) async throws {
         try await start(source, options: nil, deadline: deadline)
     }
 
@@ -62,7 +62,7 @@ extension XraySessionProviding {
             ageSecret: nil,
             assetDirectory: nil,
             options: nil,
-            deadline: .seconds(30),
+            deadline: 30,
             timeoutSeconds: 30
         )
     }

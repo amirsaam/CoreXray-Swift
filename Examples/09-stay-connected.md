@@ -11,8 +11,8 @@ provider.
 // After every launch, when the metrics port is up:
 watchdog = try engine.trafficWatchdog(
     port: 24242,
-    interval: .seconds(10),       // poll cadence
-    stalledAfter: .seconds(60)    // silence that counts as a stall
+    interval: 10,       // poll cadence
+    stalledAfter: 60    // silence that counts as a stall
 ) { [weak self] in
     // Hop off: the callback must return fast. Route back to your context.
     Task { await self?.rebuild() }
@@ -46,7 +46,7 @@ func rebuild() async {
     // stored string skips conversion entirely and is the fastest path.
     do {
         try await session.start(lastConfig, options: lastOptions,
-                                deadline: .seconds(20))
+                                deadline: 20)
         return   // replaced the dead instance; counters reset, stamp moves
     } catch {
         // Rebuild failed: fall through to the next server (06 ranking).

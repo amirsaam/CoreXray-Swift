@@ -13,7 +13,7 @@ the port unadvertised.
 let monitor = try engine.trafficMonitor(port: 24242)
 
 let first = try await monitor.snapshot()
-try await Task.sleep(for: .seconds(1))
+try await Task.sleep(nanoseconds: 1_000_000_000)
 let second = try await monitor.snapshot()
 ```
 
@@ -93,8 +93,8 @@ Polling answers "how much"; the watchdog answers "has anything moved":
 ```swift
 let watchdog = try engine.trafficWatchdog(
     port: 24242,
-    interval: .seconds(10),       // poll cadence
-    stalledAfter: .seconds(60)    // silence that counts as a stall
+    interval: 10,       // poll cadence
+    stalledAfter: 60    // silence that counts as a stall
 ) { Task { await rebuild() } }    // hop off — the callback must return fast
 watchdog.start()
 // ... session ends:

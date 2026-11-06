@@ -43,7 +43,7 @@ final class ProviderFlowTests: XCTestCase {
 
     func testDeadlineStartSucceedsWhenEngineIsFast() async throws {
         let session = Xray.shared.newSession()
-        try await session.start(.json(minimalJSON), deadline: .seconds(30))
+        try await session.start(.json(minimalJSON), deadline: 30)
         defer { try? session.stop() }
         XCTAssertTrue(try session.isRunning())
     }

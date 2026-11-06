@@ -235,7 +235,7 @@ final class TrafficTests: XCTestCase {
                 snapshot = got
                 break
             }
-            try await Task.sleep(for: .milliseconds(50))
+            try await Task.sleep(nanoseconds: 50_000_000)
         }
         XCTAssertNotNil(snapshot, "metrics endpoint never served a decodable body")
     }
@@ -269,7 +269,7 @@ final class TrafficTests: XCTestCase {
                 first = got
                 break
             }
-            try await Task.sleep(for: .milliseconds(50))
+            try await Task.sleep(nanoseconds: 50_000_000)
         }
         guard let before = first else {
             throw XCTSkip("metrics endpoint never came up")
@@ -289,7 +289,7 @@ final class TrafficTests: XCTestCase {
                 after = got
                 break
             }
-            try await Task.sleep(for: .milliseconds(50))
+            try await Task.sleep(nanoseconds: 50_000_000)
         }
         XCTAssertNotNil(after, "counters never moved after traffic through the SOCKS entry")
     }

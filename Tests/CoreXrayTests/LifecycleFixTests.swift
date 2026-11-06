@@ -35,7 +35,7 @@ final class LifecycleFixTests: XCTestCase {
         let rounds = Int(seconds * 20)
         for _ in 0 ..< rounds {
             if condition() { return }
-            try await Task.sleep(for: .milliseconds(50))
+            try await Task.sleep(nanoseconds: 50_000_000)
         }
         XCTFail(message)
     }
@@ -52,7 +52,7 @@ final class LifecycleFixTests: XCTestCase {
         session.launchOverride = { _ in _ = release.wait(timeout: .now() + 30) }
         defer { session.launchOverride = nil }
         do {
-            try await session.start(.json(minimalJSON), deadline: .milliseconds(50))
+            try await session.start(.json(minimalJSON), deadline: 0.05)
             XCTFail("expected .timedOut")
         } catch let error as XrayError {
             guard case .timedOut = error else {
@@ -78,7 +78,7 @@ final class LifecycleFixTests: XCTestCase {
         let release = DispatchSemaphore(value: 0)
         session.launchOverride = { _ in _ = release.wait(timeout: .now() + 30) }
         do {
-            try await session.start(.json(minimalJSON), deadline: .milliseconds(50))
+            try await session.start(.json(minimalJSON), deadline: 0.05)
             XCTFail("expected .timedOut")
         } catch let error as XrayError {
             guard case .timedOut = error else {
@@ -92,7 +92,7 @@ final class LifecycleFixTests: XCTestCase {
         // Release only after the fresh start: the orphan is guaranteed
         // unsettled while the new instance comes up.
         release.signal()
-        try await Task.sleep(for: .seconds(1))
+        try await Task.sleep(nanoseconds: 1_000_000_000)
         XCTAssertTrue(try session.isRunning())
         XCTAssertNotNil(session.connectedSince)
         XCTAssertFalse(
@@ -123,7 +123,7 @@ final class LifecycleFixTests: XCTestCase {
         let session = Xray.shared.newSession()
         session.launchOverride = { _ in }
         defer { session.launchOverride = nil }
-        try await session.start(.json(minimalJSON), options: options, deadline: .seconds(10))
+        try await session.start(.json(minimalJSON), options: options, deadline: 10)
         let tail = try session.recentEngineLogs(.error, lines: 5)
         XCTAssertTrue(tail.contains(where: { $0.contains("seeded line") }))
     }
@@ -149,7 +149,7 @@ final class LifecycleFixTests: XCTestCase {
         session.launchOverride = { _ in throw XrayError.bridgeFailed("no engine here") }
         defer { session.launchOverride = nil }
         do {
-            try await session.start(.json(badJSON), deadline: .seconds(10))
+            try await session.start(.json(badJSON), deadline: 10)
             XCTFail("expected .bridgeFailed")
         } catch let error as XrayError {
             guard case .bridgeFailed = error else {
@@ -187,7 +187,7 @@ final class LifecycleFixTests: XCTestCase {
         try await session.start(
             .json(minimalJSON),
             options: Xray.shared.options(tun: tun),
-            deadline: .seconds(10)
+            deadline: 10
         )
         XCTAssertNil(getenv("xray.tun.fd"), "stale fd must be cleared at launch")
         XCTAssertNil(getenv("XRAY_TUN_FD"), "stale fd must be cleared at launch")
@@ -204,7 +204,7 @@ final class LifecycleFixTests: XCTestCase {
         let config = try Xray.shared.configuration(
             .json(minimalJSON), options: Xray.shared.options(tun: tun)
         )
-        try await session.start(.json(config.json), deadline: .seconds(10))
+        try await session.start(.json(config.json), deadline: 10)
         let object = try JSONDecoder().decode(XrayJSONValue.self, from: Data(config.json.utf8))
         XCTAssertEqual(object["env"]?["xray.tun.fd"], .string("7"))
         XCTAssertEqual(
@@ -223,8 +223,8 @@ final class LifecycleFixTests: XCTestCase {
         let release = DispatchSemaphore(value: 0)
         session.launchOverride = { _ in _ = release.wait(timeout: .now() + 30) }
         defer { session.launchOverride = nil }
-        let task = Task { try await session.start(.json(minimalJSON), deadline: .seconds(10)) }
-        try await Task.sleep(for: .milliseconds(50))
+        let task = Task { try await session.start(.json(minimalJSON), deadline: 10) }
+        try await Task.sleep(nanoseconds: 50_000_000)
         try session.stop()
         release.signal()
         try await task.value
@@ -243,7 +243,7 @@ final class LifecycleFixTests: XCTestCase {
         defer { session.launchOverride = nil }
         let started = Date()
         do {
-            try await session.start(.json(minimalJSON), deadline: .milliseconds(100))
+            try await session.start(.json(minimalJSON), deadline: 0.1)
             XCTFail("expected .timedOut")
         } catch let error as XrayError {
             guard case .timedOut = error else {

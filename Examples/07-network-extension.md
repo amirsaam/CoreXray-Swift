@@ -90,13 +90,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
         // 5. Launch under a deadline — the provider has a time budget and
         //    the sync starts have no bound. They do not belong here.
-        try await session.start(config, options: opts, deadline: .seconds(20))
+        try await session.start(config, options: opts, deadline: 20)
 
         // 6. Counters and stall detection, after launch. Publish to the app
         //    via the group container + Darwin notify (poll from the app).
         monitor = try Xray.shared.trafficMonitor(port: 24242)
         watchdog = try Xray.shared.trafficWatchdog(
-            port: 24242, interval: .seconds(10), stalledAfter: .seconds(60)
+            port: 24242, interval: 10, stalledAfter: 60
         ) { [weak self] in try? self?.reconnect(plan: plan) }
         watchdog?.start()
     }
@@ -212,7 +212,7 @@ let opts = Xray.shared.options(
     tun: a.tun, metricsPort: 24242,
     environment: ["xray.location.asset": dir.path]
 )
-try await session.start(config, options: opts, deadline: .seconds(20))
+try await session.start(config, options: opts, deadline: 20)
 ```
 
 Four rules that make it correct:

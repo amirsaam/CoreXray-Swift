@@ -19,3 +19,17 @@ jobs:
 
       - name: Test
         run: swift test
+
+  ios-availability:
+    # The macOS build above cannot see iOS availability: an iOS 16-only
+    # API compiles fine on macOS 13 and breaks every app consumer on
+    # iOS 15 instead (this happened with Duration/ContinuousClock).
+    # This job builds the iOS 15-floor target so that class of bug
+    # fails here, not in a user's project.
+    name: Build for iOS Simulator
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build for iOS Simulator
+        run: xcodebuild build -scheme CoreXray-Swift -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO
