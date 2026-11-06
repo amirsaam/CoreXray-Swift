@@ -608,9 +608,63 @@ private struct VarsProbe: Decodable {
     }
 }
 
+/// Restart-proof data usage for one session. Feed it snapshots from
+/// a `XrayTrafficMonitor` and it accumulates the real user traffic —
+/// outbound-side `uplink`/`downlink` only, never the doubled
+/// inbound+outbound totals. The first snapshot after a `reset` only
+/// sets the baseline; an engine restart in between reads as fresh
+/// traffic, never a negative spike. Owned by `XraySession` (see
+/// `XraySession.usage`), which resets it on every successful start,
+/// so the numbers always belong to the running session — seed it from
+/// your own persisted counters only if you want cross-session totals.
+public final class XrayDataUsage: @unchecked Sendable {
+    private let lock = NSLock()
+    private var baseline: XrayTrafficSnapshot?
+    private var up: Int64 = 0
+    private var down: Int64 = 0
+
+    public init() {}
+
+    /// Adds one poll. Thread-safe; call from your poll loop.
+    public func advance(_ snapshot: XrayTrafficSnapshot) {
+        lock.withLock {
+            if let previous = baseline {
+                let d = snapshot.delta(since: previous)
+                let (newUp, upOverflow) = up.addingReportingOverflow(d.uplink)
+                up = upOverflow ? .max : newUp
+                let (newDown, downOverflow) = down.addingReportingOverflow(d.downlink)
+                down = downOverflow ? .max : newDown
+            }
+            baseline = snapshot
+        }
+    }
+
+    /// Bytes uploaded this session (outbound side — the real number).
+    public var usedUp: Int64 { lock.withLock { up } }
+    /// Bytes downloaded this session (outbound side — the real number).
+    public var usedDown: Int64 { lock.withLock { down } }
+    /// `usedUp + usedDown`, saturating instead of trapping.
+    public var usedTotal: Int64 {
+        lock.withLock {
+            let (sum, overflow) = up.addingReportingOverflow(down)
+            return overflow ? .max : sum
+        }
+    }
+
+    /// Clears the counters and the baseline. The session calls this on
+    /// every successful start; call it yourself only to discard the
+    /// running session's numbers early.
+    public func reset() {
+        lock.withLock {
+            baseline = nil
+            up = 0
+            down = 0
+        }
+    }
+}
 // Value factories for metrics, observatory, and the monitor. Ports are
-// checked here; snapshots and deltas are read-models from the engine and
-// need no factories.
+// checked here; snapshots, deltas, and usage are read-models from the
+// engine and need no factories.
 extension Xray {
     /// Builds a metrics section by hand — for raw documents and
     /// transforms. The tag labels the section only (the engine keys

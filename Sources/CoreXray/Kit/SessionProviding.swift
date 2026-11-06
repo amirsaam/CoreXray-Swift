@@ -8,6 +8,7 @@ import Foundation
 public protocol XraySessionProviding {
     var logger: ((String) -> Void)? { get set }
     var connectedSince: Date? { get }
+    var usage: XrayDataUsage { get }
 
     func build(_ source: XrayConfigSource, options: XraySessionOptions?) throws -> XrayConfig
     func start(_ source: XrayConfigSource, options: XraySessionOptions?) throws

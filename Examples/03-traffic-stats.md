@@ -38,9 +38,20 @@ through, once on the outbound it left through. So:
   actually exchanged**. Dashboards want these.
 
 ```swift
-let upBytes = second.uplink      // session total uploaded, wire-accurate
-let downBytes = second.downlink  // session total downloaded
+session.usage.advance(second)   // one call per poll — that is the feature
+let upBytes = session.usage.usedUp      // uploaded this session, wire-accurate
+let downBytes = session.usage.usedDown  // downloaded this session
+let total = session.usage.usedTotal     // their sum, for the data label
 ```
+
+`session.usage` (`XrayDataUsage`) accumulates outbound-side deltas, so
+it always answers the real number: the first snapshot only sets the
+baseline, an engine restart between polls reads as fresh traffic
+instead of going negative, and `stop()` keeps the counters for the
+disconnect report — the next successful `start` resets them, so each
+session owns its numbers. Reading `snapshot.uplink` directly gives the
+same value inside one uninterrupted run, but `usage` is the API that
+stays correct across restarts and stops.
 
 ## Step 3 — Speeds from deltas
 

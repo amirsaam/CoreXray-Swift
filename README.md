@@ -796,15 +796,11 @@ let config = try assembly.assemble()
 try session.start(config)
 
 let monitor = try Xray.shared.trafficMonitor(port: verifiedPort)
-var previous = try await monitor.snapshot()
 while running {
     try await Task.sleep(nanoseconds: 1_000_000_000)
-    let now = try await monitor.snapshot()
-    let speed = now.delta(since: previous)
-    print(speed.upPerSecond, speed.downPerSecond)  // bytes/sec both ways
-    totals.up += speed.totalUp                      // accumulate for the session
-    totals.down += speed.totalDown
-    previous = now
+    session.usage.advance(try await monitor.snapshot())
+    print(session.usage.usedUp, session.usage.usedDown) // real bytes up/down this session
+    print(session.usage.usedTotal)                      // their sum, for the data label
 }
 ```
 
@@ -830,7 +826,12 @@ twice — once on the
 inbound it entered through, once on the outbound it left through — so the
 totals are 2x the bytes on the wire. Dashboards want the outbound side:
 `uplink`/`downlink` (and their `XrayTrafficDelta` twins, with
-`uplinkPerSecond`/`downlinkPerSecond`) count that side only. `delta(since:)`
+`uplinkPerSecond`/`downlinkPerSecond`) count that side only — and
+`session.usage` (`XrayDataUsage`) accumulates exactly those across
+polls, so one `advance` per snapshot is the whole data-usage feature:
+the first snapshot sets the baseline, restarts read as fresh traffic,
+and the counters reset on every start so each session owns its
+numbers. `delta(since:)`
 diffs two snapshots into a `XrayTrafficDelta` — per-tag bytes moved in the
 interval, totals, and `upPerSecond`/`downPerSecond` derived from the
 wall-clock gap, so polling once a second reads as live speed. If the engine

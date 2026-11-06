@@ -307,4 +307,55 @@ final class TrafficTests: XCTestCase {
             XCTFail("expected XrayError, got \(error)")
         }
     }
+
+    // MARK: - XrayDataUsage: per-session real numbers
+
+    private func usageSnapshot(up: Int64, down: Int64) -> XrayTrafficSnapshot {
+        XrayTrafficSnapshot(outbound: ["proxy": XrayTrafficCounter(up: up, down: down)])
+    }
+
+    func testUsageFirstSnapshotIsBaselineOnly() {
+        let usage = XrayDataUsage()
+        usage.advance(usageSnapshot(up: 1_000, down: 2_000))
+        XCTAssertEqual(usage.usedUp, 0, "first snapshot sets the baseline, adds nothing")
+        XCTAssertEqual(usage.usedDown, 0)
+        XCTAssertEqual(usage.usedTotal, 0)
+    }
+
+    func testUsageAccumulatesOutboundSideOnly() {
+        let usage = XrayDataUsage()
+        usage.advance(XrayTrafficSnapshot(
+            inbound: ["socks": XrayTrafficCounter(up: 500, down: 500)],
+            outbound: ["proxy": XrayTrafficCounter(up: 1_000, down: 2_000)]
+        ))
+        usage.advance(XrayTrafficSnapshot(
+            inbound: ["socks": XrayTrafficCounter(up: 700, down: 900)],
+            outbound: ["proxy": XrayTrafficCounter(up: 1_500, down: 3_000)]
+        ))
+        // Inbound movement (200/400) is ignored: only outbound deltas count.
+        XCTAssertEqual(usage.usedUp, 500)
+        XCTAssertEqual(usage.usedDown, 1_000)
+        XCTAssertEqual(usage.usedTotal, 1_500)
+    }
+
+    func testUsageSurvivesEngineRestart() {
+        let usage = XrayDataUsage()
+        usage.advance(usageSnapshot(up: 9_000, down: 9_000))
+        usage.advance(usageSnapshot(up: 10, down: 20))
+        XCTAssertEqual(usage.usedUp, 10, "restart reads as fresh traffic, never negative")
+        XCTAssertEqual(usage.usedDown, 20)
+    }
+
+    func testUsageResetClearsEverything() {
+        let usage = XrayDataUsage()
+        usage.advance(usageSnapshot(up: 1_000, down: 2_000))
+        usage.advance(usageSnapshot(up: 1_500, down: 3_000))
+        usage.reset()
+        XCTAssertEqual(usage.usedUp, 0)
+        XCTAssertEqual(usage.usedDown, 0)
+        XCTAssertEqual(usage.usedTotal, 0)
+        // Baseline is gone too: the next snapshot starts over.
+        usage.advance(usageSnapshot(up: 100, down: 100))
+        XCTAssertEqual(usage.usedUp, 0)
+    }
 }

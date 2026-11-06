@@ -202,6 +202,24 @@ public final class XraySession: @unchecked Sendable {
         stateLock.withLock { _connectedSince }
     }
 
+    /// This session's data usage: outbound-side upload/download totals
+    /// fed from a `XrayTrafficMonitor` poll loop via `advance`. Reset on
+    /// every successful start, kept across `stop` so the disconnect
+    /// report survives. The reference is stable — hold it once:
+    ///
+    /// ```swift
+    /// let monitor = try engine.trafficMonitor(port: 10085)
+    /// var previous = try await monitor.snapshot()
+    /// while running {
+    ///     try await Task.sleep(nanoseconds: 1_000_000_000)
+    ///     let now = try await monitor.snapshot()
+    ///     session.usage.advance(now)
+    ///     label.text = "\(session.usage.usedDown) down / \(session.usage.usedUp) up"
+    ///     previous = now
+    /// }
+    /// ```
+    public let usage = XrayDataUsage()
+
     internal init(logger: ((String) -> Void)? = nil) {
         self._logger = logger
     }
@@ -1667,6 +1685,7 @@ public final class XraySession: @unchecked Sendable {
 
     private func markLaunched() {
         stateLock.withLock { _connectedSince = Date() }
+        usage.reset()
     }
 
     // Clears launch side effects on stop. The log file paths survive:
