@@ -1,7 +1,7 @@
 import XCTest
 @testable import CoreXray
 
-// Session assembly without launching: sniffing injection, transforms,
+// XraySession assembly without launching: sniffing injection, transforms,
 // dry-runs, logging. No engine contact except share-link conversion.
 
 final class SessionTests: XCTestCase {
@@ -10,17 +10,17 @@ final class SessionTests: XCTestCase {
     """
 
     func testBuildFromJSONKeepsContent() throws {
-        let session = Xray.Session()
+        let session = XraySession()
         let config = try session.build(.json(minimalJSON))
         XCTAssertTrue(config.json.contains("socks-in"))
     }
 
     func testBuildRejectsNonObject() throws {
-        let session = Xray.Session()
+        let session = XraySession()
         do {
             _ = try session.build(.json("[1,2,3]"))
             XCTFail("expected an error")
-        } catch let error as Xray.Error {
+        } catch let error as XrayError {
             guard case .invalidInput = error else {
                 return XCTFail("expected .invalidInput, got \(error)")
             }
@@ -28,12 +28,12 @@ final class SessionTests: XCTestCase {
     }
 
     func testSniffingInjectedIntoBareInbounds() throws {
-        let session = Xray.Session()
+        let session = XraySession()
         let config = try session.build(
             .json(minimalJSON),
-            options: .init(sniffing: Xray.Sniffing(destOverride: ["http", "tls"]))
+            options: .init(sniffing: XraySniffing(destOverride: ["http", "tls"]))
         )
-        let value = try JSONDecoder().decode(Xray.JSONValue.self, from: Data(config.json.utf8))
+        let value = try JSONDecoder().decode(XrayJSONValue.self, from: Data(config.json.utf8))
         XCTAssertEqual(value["inbounds"]?[0]?["sniffing"]?["enabled"], .bool(true))
         XCTAssertEqual(value["inbounds"]?[0]?["sniffing"]?["destOverride"], .array([.string("http"), .string("tls")]))
     }
@@ -42,35 +42,35 @@ final class SessionTests: XCTestCase {
         let withSniffing = """
         {"inbounds":[{"tag":"in","protocol":"socks","sniffing":{"enabled":false}}],"outbounds":[]}
         """
-        let session = Xray.Session()
+        let session = XraySession()
         let config = try session.build(
             .json(withSniffing),
-            options: .init(sniffing: Xray.Sniffing(enabled: true))
+            options: .init(sniffing: XraySniffing(enabled: true))
         )
-        let value = try JSONDecoder().decode(Xray.JSONValue.self, from: Data(config.json.utf8))
+        let value = try JSONDecoder().decode(XrayJSONValue.self, from: Data(config.json.utf8))
         XCTAssertEqual(value["inbounds"]?[0]?["sniffing"]?["enabled"], .bool(false))
     }
 
     func testTransformGetsLastWord() throws {
-        let session = Xray.Session()
+        let session = XraySession()
         let config = try session.build(
             .json(minimalJSON),
             options: .init(transform: { $0["log"] = ["loglevel": "error"] })
         )
-        let value = try JSONDecoder().decode(Xray.JSONValue.self, from: Data(config.json.utf8))
+        let value = try JSONDecoder().decode(XrayJSONValue.self, from: Data(config.json.utf8))
         XCTAssertEqual(value["log"]?["loglevel"], .string("error"))
     }
 
     func testBuildDoesNotStartEngine() throws {
         try Xray.shared.stop()
-        let session = Xray.Session()
+        let session = XraySession()
         _ = try session.build(.json(minimalJSON))
         XCTAssertFalse(try session.isRunning())
     }
 
     func testLoggerSeesBuild() throws {
         var notes: [String] = []
-        let session = Xray.Session(logger: { notes.append($0) })
+        let session = XraySession(logger: { notes.append($0) })
         _ = try session.build(.json(minimalJSON))
         XCTAssertFalse(notes.isEmpty)
         XCTAssertTrue(notes.joined().contains("assembled"))
@@ -78,7 +78,7 @@ final class SessionTests: XCTestCase {
 
     func testShareLinkInputBuildsWithoutLaunching() throws {
         try Xray.shared.stop()
-        let session = Xray.Session()
+        let session = XraySession()
         let link = "vless://12345678-abcd-abcd-abcd-123456789abc@example.com:443?type=tcp&security=tls&encryption=none&sni=example.com#Node"
         let config = try session.build(.shareLinks(link))
         XCTAssertTrue(config.json.contains("outbounds"))
@@ -86,7 +86,7 @@ final class SessionTests: XCTestCase {
     }
 
     func testStartStopLifecycle() throws {
-        let session = Xray.Session()
+        let session = XraySession()
         try session.start(rawJSON: """
         {"log":{"loglevel":"warning"},"inbounds":[],"outbounds":[{"protocol":"freedom","tag":"direct"}]}
         """)
@@ -96,12 +96,12 @@ final class SessionTests: XCTestCase {
     }
 
     func testCredentialsGuardSocksInbound() throws {
-        let session = Xray.Session()
+        let session = XraySession()
         let config = try session.build(
             .json(minimalJSON),
-            options: .init(credentials: Xray.Credentials(username: "tun-user", password: "s3cret"))
+            options: .init(credentials: XrayCredentials(username: "tun-user", password: "s3cret"))
         )
-        let value = try JSONDecoder().decode(Xray.JSONValue.self, from: Data(config.json.utf8))
+        let value = try JSONDecoder().decode(XrayJSONValue.self, from: Data(config.json.utf8))
         let settings = value["inbounds"]?[0]?["settings"]
         XCTAssertEqual(settings?["auth"], .string("password"))
         XCTAssertEqual(settings?["users"]?[0]?["user"], .string("tun-user"))
@@ -109,14 +109,14 @@ final class SessionTests: XCTestCase {
     }
 
     func testCredentialsWithoutSocksInboundThrow() throws {
-        let session = Xray.Session()
+        let session = XraySession()
         do {
             _ = try session.build(
                 .json(#"{"inbounds":[],"outbounds":[{"protocol":"freedom"}]}"#),
-                options: .init(credentials: Xray.Credentials(username: "u", password: "p"))
+                options: .init(credentials: XrayCredentials(username: "u", password: "p"))
             )
             XCTFail("expected an error")
-        } catch let error as Xray.Error {
+        } catch let error as XrayError {
             guard case .invalidInput = error else {
                 return XCTFail("expected .invalidInput, got \(error)")
             }
@@ -125,17 +125,17 @@ final class SessionTests: XCTestCase {
 
     func testTunBuildAddsRealInboundWithoutLaunching() throws {
         try Xray.shared.stop()
-        let session = Xray.Session()
+        let session = XraySession()
         let config = try session.build(
             .json(minimalJSON),
-            options: .init(tun: Xray.TunEntry(
+            options: .init(tun: XrayTunEntry(
                 gateway: ["198.18.0.1/15"],
                 autoSystemRoutingTable: ["0.0.0.0/0"],
                 autoOutboundsInterface: "auto"
             ))
         )
-        let value = try JSONDecoder().decode(Xray.JSONValue.self, from: Data(config.json.utf8))
-        let entry: Xray.JSONValue = value["inbounds"]?.arrayValue?.first {
+        let value = try JSONDecoder().decode(XrayJSONValue.self, from: Data(config.json.utf8))
+        let entry: XrayJSONValue = value["inbounds"]?.arrayValue?.first {
             $0["tag"]?.stringValue == "tunIn"
         } ?? .null
         XCTAssertEqual(entry["protocol"], .string("tun"))
@@ -149,10 +149,10 @@ final class SessionTests: XCTestCase {
     }
 
     func testTunEntryDefaultsAreMinimal() throws {
-        let session = Xray.Session()
-        let config = try session.build(.json(minimalJSON), options: .init(tun: Xray.TunEntry()))
-        let value = try JSONDecoder().decode(Xray.JSONValue.self, from: Data(config.json.utf8))
-        let entry: Xray.JSONValue = value["inbounds"]?.arrayValue?.first {
+        let session = XraySession()
+        let config = try session.build(.json(minimalJSON), options: .init(tun: XrayTunEntry()))
+        let value = try JSONDecoder().decode(XrayJSONValue.self, from: Data(config.json.utf8))
+        let entry: XrayJSONValue = value["inbounds"]?.arrayValue?.first {
             $0["tag"]?.stringValue == "tunIn"
         } ?? .null
         XCTAssertEqual(entry["settings"], .object(["mtu": .int(1500)]))
@@ -164,10 +164,10 @@ final class SessionTests: XCTestCase {
     }
 
     func testTunFullSettingsSerializeVerbatim() throws {
-        let session = Xray.Session()
+        let session = XraySession()
         let config = try session.build(
             .json(minimalJSON),
-            options: .init(tun: Xray.TunEntry(
+            options: .init(tun: XrayTunEntry(
                 tag: "vpn",
                 name: "utun10",
                 mtu: 9000,
@@ -177,8 +177,8 @@ final class SessionTests: XCTestCase {
                 autoOutboundsInterface: "en0"
             ))
         )
-        let value = try JSONDecoder().decode(Xray.JSONValue.self, from: Data(config.json.utf8))
-        let settings: Xray.JSONValue = value["inbounds"]?.arrayValue?.first {
+        let value = try JSONDecoder().decode(XrayJSONValue.self, from: Data(config.json.utf8))
+        let settings: XrayJSONValue = value["inbounds"]?.arrayValue?.first {
             $0["tag"]?.stringValue == "vpn"
         }?["settings"] ?? .null
         XCTAssertEqual(settings["name"], .string("utun10"))
@@ -190,12 +190,12 @@ final class SessionTests: XCTestCase {
     }
 
     func testTunFileDescriptorMergesIntoEnv() throws {
-        let session = Xray.Session()
+        let session = XraySession()
         let config = try session.build(
             .json(#"{"env":{"existing":"kept"},"inbounds":[],"outbounds":[]}"#),
-            options: .init(tun: Xray.TunEntry(fileDescriptor: 7))
+            options: .init(tun: XrayTunEntry(fileDescriptor: 7))
         )
-        let value = try JSONDecoder().decode(Xray.JSONValue.self, from: Data(config.json.utf8))
+        let value = try JSONDecoder().decode(XrayJSONValue.self, from: Data(config.json.utf8))
         XCTAssertEqual(value["env"]?["xray.tun.fd"], .string("7"))
         XCTAssertEqual(value["env"]?["existing"], .string("kept"))
     }
@@ -211,47 +211,47 @@ final class SessionTests: XCTestCase {
             unsetenv("xray.tun.fd")
             unsetenv("XRAY_TUN_FD")
         }
-        let session = Xray.Session()
-        _ = try session.build(.json(minimalJSON), options: .init(tun: Xray.TunEntry()))
+        let session = XraySession()
+        _ = try session.build(.json(minimalJSON), options: .init(tun: XrayTunEntry()))
         XCTAssertNil(getenv("xray.tun.fd"))
         XCTAssertNil(getenv("XRAY_TUN_FD"))
     }
 
     func testEnvironmentMergesIntoDocumentEnv() throws {
-        let session = Xray.Session()
+        let session = XraySession()
         let config = try session.build(
             .json(#"{"env":{"existing":"kept"},"inbounds":[],"outbounds":[]}"#),
             options: .init(environment: ["xray.location.asset": "/var/db/geo"])
         )
-        let value = try JSONDecoder().decode(Xray.JSONValue.self, from: Data(config.json.utf8))
+        let value = try JSONDecoder().decode(XrayJSONValue.self, from: Data(config.json.utf8))
         XCTAssertEqual(value["env"]?["xray.location.asset"], .string("/var/db/geo"))
         XCTAssertEqual(value["env"]?["existing"], .string("kept"))
     }
 
     func testEnvironmentDoesNotOverwriteDocumentEnv() throws {
-        let session = Xray.Session()
+        let session = XraySession()
         let config = try session.build(
             .json(#"{"env":{"xray.location.asset":"/document/path"},"inbounds":[],"outbounds":[]}"#),
             options: .init(environment: ["xray.location.asset": "/options/path"])
         )
-        let value = try JSONDecoder().decode(Xray.JSONValue.self, from: Data(config.json.utf8))
+        let value = try JSONDecoder().decode(XrayJSONValue.self, from: Data(config.json.utf8))
         XCTAssertEqual(value["env"]?["xray.location.asset"], .string("/document/path"))
     }
 
     func testTunCredentialsLeaveTunInboundAlone() throws {
-        let session = Xray.Session()
+        let session = XraySession()
         let config = try session.build(
             .json(minimalJSON),
             options: .init(
-                credentials: Xray.Credentials(username: "app-user", password: "s3cret"),
-                tun: Xray.TunEntry()
+                credentials: XrayCredentials(username: "app-user", password: "s3cret"),
+                tun: XrayTunEntry()
             )
         )
-        let value = try JSONDecoder().decode(Xray.JSONValue.self, from: Data(config.json.utf8))
+        let value = try JSONDecoder().decode(XrayJSONValue.self, from: Data(config.json.utf8))
         // The SOCKS entry is guarded...
         XCTAssertEqual(value["inbounds"]?[0]?["settings"]?["auth"], .string("password"))
         // ...the TUN entry carries no auth at all.
-        let tun: Xray.JSONValue = value["inbounds"]?.arrayValue?.first {
+        let tun: XrayJSONValue = value["inbounds"]?.arrayValue?.first {
             $0["tag"]?.stringValue == "tunIn"
         } ?? .null
         XCTAssertNil(tun["settings"]?["auth"])
@@ -260,25 +260,25 @@ final class SessionTests: XCTestCase {
     func testTunValidatePassesAgainstEngine() throws {
         // Proves the shipped stock engine resolves "protocol": "tun":
         // validate constructs the full instance without starting it.
-        let session = Xray.Session()
-        try session.validate(.json(minimalJSON), options: .init(tun: Xray.TunEntry(
+        let session = XraySession()
+        try session.validate(.json(minimalJSON), options: .init(tun: XrayTunEntry(
             gateway: ["198.18.0.1/15"],
             autoSystemRoutingTable: ["0.0.0.0/0"]
         )))
     }
 
     func testNilTunEntryMeansProxyMode() throws {
-        let session = Xray.Session()
+        let session = XraySession()
         let config = try session.build(.json(minimalJSON))
-        let value = try JSONDecoder().decode(Xray.JSONValue.self, from: Data(config.json.utf8))
+        let value = try JSONDecoder().decode(XrayJSONValue.self, from: Data(config.json.utf8))
         let tags = value["inbounds"]?.arrayValue?.compactMap { $0["tag"]?.stringValue } ?? []
         XCTAssertFalse(tags.contains("tunIn"))
         XCTAssertNil(value["env"])
     }
 
     func testVerbatimRoutingWrittenAsIs() throws {
-        let session = Xray.Session()
-        let routing = Xray.Routing(
+        let session = XraySession()
+        let routing = XrayRouting(
             domainStrategy: .ipIfNonMatch,
             rules: [
                 .init(
@@ -302,7 +302,7 @@ final class SessionTests: XCTestCase {
             // not files that need to exist.
             geoCheck: false
         ))
-        let value = try JSONDecoder().decode(Xray.JSONValue.self, from: Data(config.json.utf8))
+        let value = try JSONDecoder().decode(XrayJSONValue.self, from: Data(config.json.utf8))
         XCTAssertEqual(value["routing"]?["domainStrategy"], .string("IPIfNonMatch"))
         XCTAssertEqual(value["routing"]?["rules"]?[0]?["domain"], .array([.string("geosite:ads"), .string("full:tracker.example.com")]))
         XCTAssertEqual(value["routing"]?["rules"]?[0]?["outboundTag"], .string("proxy"))
@@ -328,33 +328,33 @@ final class SessionTests: XCTestCase {
     }
 
     func testProxyDestinationResolvesToConvertedTag() throws {
-        let session = Xray.Session()
+        let session = XraySession()
         let config = try session.build(
             .shareLinks("vless://12345678-abcd-abcd-abcd-123456789abc@example.com:443?type=tcp&security=tls&encryption=none&sni=example.com#Node"),
-            options: .init(routing: Xray.Routing(final: .proxy))
+            options: .init(routing: XrayRouting(final: .proxy))
         )
-        let value = try JSONDecoder().decode(Xray.JSONValue.self, from: Data(config.json.utf8))
+        let value = try JSONDecoder().decode(XrayJSONValue.self, from: Data(config.json.utf8))
         XCTAssertEqual(value["outbounds"]?[0]?["tag"], .string("Node"))
         XCTAssertNil(value["routing"]?["final"])
         XCTAssertEqual(value["routing"]?["rules"]?.arrayValue?.last?["outboundTag"], .string("Node"))
     }
 
     func testUntaggedProxyGetsProxyTag() throws {
-        let session = Xray.Session()
+        let session = XraySession()
         let bare = #"{"inbounds":[],"outbounds":[{"protocol":"freedom"}]}"#
-        let config = try session.build(.json(bare), options: .init(routing: Xray.Routing(final: .proxy)))
-        let value = try JSONDecoder().decode(Xray.JSONValue.self, from: Data(config.json.utf8))
+        let config = try session.build(.json(bare), options: .init(routing: XrayRouting(final: .proxy)))
+        let value = try JSONDecoder().decode(XrayJSONValue.self, from: Data(config.json.utf8))
         XCTAssertEqual(value["outbounds"]?[0]?["tag"], .string("proxy"))
         XCTAssertNil(value["routing"]?["final"])
         XCTAssertEqual(value["routing"]?["rules"]?.arrayValue?.last?["outboundTag"], .string("proxy"))
     }
 
     func testRoutingToProxyWithoutOutboundsThrows() throws {
-        let session = Xray.Session()
+        let session = XraySession()
         do {
-            _ = try session.build(.json(#"{"inbounds":[]}"#), options: .init(routing: Xray.Routing(final: .proxy)))
+            _ = try session.build(.json(#"{"inbounds":[]}"#), options: .init(routing: XrayRouting(final: .proxy)))
             XCTFail("expected an error")
-        } catch let error as Xray.Error {
+        } catch let error as XrayError {
             guard case .invalidInput = error else {
                 XCTFail("wrong error: \(error)")
                 return
@@ -363,9 +363,9 @@ final class SessionTests: XCTestCase {
     }
 
     func testMissingStandardsAreAddedOnce() throws {
-        let session = Xray.Session()
+        let session = XraySession()
         let bare = #"{"inbounds":[],"outbounds":[{"tag":"direct","protocol":"freedom"}]}"#
-        let routing = Xray.Routing(
+        let routing = XrayRouting(
             rules: [
                 .init(domains: ["example.com"], destination: .block),
                 .init(inboundTags: ["dns-in"], destination: .dns),
@@ -373,7 +373,7 @@ final class SessionTests: XCTestCase {
             final: .direct
         )
         let config = try session.build(.json(bare), options: .init(routing: routing))
-        let value = try JSONDecoder().decode(Xray.JSONValue.self, from: Data(config.json.utf8))
+        let value = try JSONDecoder().decode(XrayJSONValue.self, from: Data(config.json.utf8))
         let outbounds = value["outbounds"]?.arrayValue ?? []
         let tags = outbounds.compactMap { $0["tag"]?.stringValue }
         XCTAssertEqual(tags.filter { $0 == "direct" }.count, 1)
@@ -384,9 +384,9 @@ final class SessionTests: XCTestCase {
     }
 
     func testNoRoutingLeavesDocumentAlone() throws {
-        let session = Xray.Session()
+        let session = XraySession()
         let config = try session.build(.json(minimalJSON))
-        let value = try JSONDecoder().decode(Xray.JSONValue.self, from: Data(config.json.utf8))
+        let value = try JSONDecoder().decode(XrayJSONValue.self, from: Data(config.json.utf8))
         XCTAssertNil(value["routing"])
     }
 
@@ -403,16 +403,16 @@ final class SessionTests: XCTestCase {
         try Xray.shared.stop()
         var fds: [Int32] = [0, 0]
         guard pipe(&fds) == 0 else {
-            throw Xray.Error.bridgeFailed("pipe for descriptor hand-off failed")
+            throw XrayError.bridgeFailed("pipe for descriptor hand-off failed")
         }
         defer {
             close(fds[0])
             close(fds[1])
         }
-        let session = Xray.Session()
+        let session = XraySession()
         try session.start(
             .json(#"{"log":{"loglevel":"warning"},"inbounds":[],"outbounds":[{"tag":"direct","protocol":"freedom"}]}"#),
-            options: .init(tun: Xray.TunEntry(fileDescriptor: fds[0]))
+            options: .init(tun: XrayTunEntry(fileDescriptor: fds[0]))
         )
         XCTAssertTrue(try session.isRunning())
         try session.stop()
@@ -435,11 +435,11 @@ final class SessionTests: XCTestCase {
         }
         let socketFD = socket(AF_SYSTEM, SOCK_DGRAM, SYSPROTO_CONTROL)
         guard socketFD >= 0 else {
-            throw Xray.Error.bridgeFailed("utun control socket could not be opened")
+            throw XrayError.bridgeFailed("utun control socket could not be opened")
         }
         guard ioctl(socketFD, ctlIOCGInfo, &info) == 0 else {
             close(socketFD)
-            throw Xray.Error.bridgeFailed("utun control id lookup failed")
+            throw XrayError.bridgeFailed("utun control id lookup failed")
         }
         var address = sockaddr_ctl()
         address.sc_len = UInt8(MemoryLayout<sockaddr_ctl>.size)
@@ -455,7 +455,7 @@ final class SessionTests: XCTestCase {
         }
         guard connected else {
             close(socketFD)
-            throw Xray.Error.bridgeFailed("utun connect failed")
+            throw XrayError.bridgeFailed("utun connect failed")
         }
         return socketFD
     }

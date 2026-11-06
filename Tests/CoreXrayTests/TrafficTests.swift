@@ -2,33 +2,33 @@ import Darwin
 import XCTest
 @testable import CoreXray
 
-// Metrics-over-HTTP: the assembly writes the metrics/stats/policy sections,
+// XrayMetrics-over-HTTP: the assembly writes the metrics/stats/policy sections,
 // the monitor parses /debug/vars, deltas turn snapshots into speed.
 
 final class TrafficTests: XCTestCase {
     private let minimalOutbounds = #"{"outbounds":[{"protocol":"freedom","tag":"direct"}]}"#
 
-    private func buildMetricsConfig(port: Int, baseJSON: String? = nil) throws -> Xray.Config {
-        try Xray.Session().build(
+    private func buildMetricsConfig(port: Int, baseJSON: String? = nil) throws -> XrayConfig {
+        try XraySession().build(
             .json(baseJSON ?? minimalOutbounds),
             options: .init(metricsPort: port)
         )
     }
 
-    private func document(_ config: Xray.Config) throws -> Xray.JSONObject {
-        let decoded = try JSONDecoder().decode(Xray.JSONValue.self, from: Data(config.json.utf8))
+    private func document(_ config: XrayConfig) throws -> XrayJSONObject {
+        let decoded = try JSONDecoder().decode(XrayJSONValue.self, from: Data(config.json.utf8))
         guard case .object(let dict) = decoded else {
             throw XCTSkip("assembled config is not an object")
         }
         return dict
     }
 
-    // MARK: - Assembly
+    // MARK: - XrayAssembly
 
     func testMetricsSectionsAreWritten() throws {
         let dict = try document(try buildMetricsConfig(port: 10085))
         XCTAssertEqual(dict["metrics"]?["listen"]?.stringValue, "127.0.0.1:10085")
-        XCTAssertEqual(dict["metrics"]?["tag"]?.stringValue, "Metrics")
+        XCTAssertEqual(dict["metrics"]?["tag"]?.stringValue, "XrayMetrics")
         XCTAssertNotNil(dict["stats"]?.objectValue)
         let system = dict["policy"]?["system"]?.objectValue
         XCTAssertEqual(system?["statsInboundUplink"], .bool(true))
@@ -52,12 +52,12 @@ final class TrafficTests: XCTestCase {
         do {
             _ = try buildMetricsConfig(port: 0)
             XCTFail("expected .invalidInput")
-        } catch let error as Xray.Error {
+        } catch let error as XrayError {
             guard case .invalidInput = error else {
                 return XCTFail("expected .invalidInput, got \(error)")
             }
         } catch {
-            XCTFail("expected Xray.Error, got \(error)")
+            XCTFail("expected XrayError, got \(error)")
         }
     }
 
@@ -79,7 +79,7 @@ final class TrafficTests: XCTestCase {
     """
 
     func testCannedVarsPayloadParses() throws {
-        let snapshot = try Xray.TrafficMonitor.decodeSnapshot(from: Data(cannedVars.utf8))
+        let snapshot = try XrayTrafficMonitor.decodeSnapshot(from: Data(cannedVars.utf8))
         XCTAssertEqual(snapshot.inbound["tun-in"]?.up, 100)
         XCTAssertEqual(snapshot.inbound["tun-in"]?.down, 200)
         XCTAssertEqual(snapshot.outbound["proxy"]?.total, 300)
@@ -89,14 +89,14 @@ final class TrafficTests: XCTestCase {
     }
 
     func testMissingStatsDecodesToEmpty() throws {
-        let snapshot = try Xray.TrafficMonitor.decodeSnapshot(from: Data(#"{"memstats":{}}"#.utf8))
+        let snapshot = try XrayTrafficMonitor.decodeSnapshot(from: Data(#"{"memstats":{}}"#.utf8))
         XCTAssertTrue(snapshot.inbound.isEmpty)
         XCTAssertTrue(snapshot.outbound.isEmpty)
         XCTAssertEqual(snapshot.totalUp, 0)
     }
 
     func testGarbageVarsPayloadThrowsBridgeFailed() {
-        XCTAssertThrowsError(try Xray.TrafficMonitor.decodeSnapshot(from: Data("not json".utf8)))
+        XCTAssertThrowsError(try XrayTrafficMonitor.decodeSnapshot(from: Data("not json".utf8)))
     }
 
     func testObservatorySectionParsesWithEngineSpelling() throws {
@@ -122,7 +122,7 @@ final class TrafficTests: XCTestCase {
           }
         }
         """#
-        let snapshot = try Xray.TrafficMonitor.decodeSnapshot(from: Data(body.utf8))
+        let snapshot = try XrayTrafficMonitor.decodeSnapshot(from: Data(body.utf8))
         XCTAssertTrue(snapshot.inbound.isEmpty)
         let alive = try XCTUnwrap(snapshot.observatory["proxy-01"])
         XCTAssertTrue(alive.alive)
@@ -139,20 +139,20 @@ final class TrafficTests: XCTestCase {
     }
 
     func testObservatoryAbsentDecodesToEmpty() throws {
-        let snapshot = try Xray.TrafficMonitor.decodeSnapshot(from: Data(#"{"memstats":{}}"#.utf8))
+        let snapshot = try XrayTrafficMonitor.decodeSnapshot(from: Data(#"{"memstats":{}}"#.utf8))
         XCTAssertTrue(snapshot.observatory.isEmpty)
     }
 
     // MARK: - Deltas
 
     func testDeltaProducesRates() {
-        let earlier = Xray.TrafficSnapshot(
+        let earlier = XrayTrafficSnapshot(
             taken: Date(timeIntervalSince1970: 1_000),
-            outbound: ["proxy": Xray.TrafficCounter(up: 1_000, down: 2_000)]
+            outbound: ["proxy": XrayTrafficCounter(up: 1_000, down: 2_000)]
         )
-        let later = Xray.TrafficSnapshot(
+        let later = XrayTrafficSnapshot(
             taken: Date(timeIntervalSince1970: 1_002),
-            outbound: ["proxy": Xray.TrafficCounter(up: 1_500, down: 3_000)]
+            outbound: ["proxy": XrayTrafficCounter(up: 1_500, down: 3_000)]
         )
         let delta = later.delta(since: earlier)
         XCTAssertEqual(delta.seconds, 2, accuracy: 0.001)
@@ -164,13 +164,13 @@ final class TrafficTests: XCTestCase {
     }
 
     func testDeltaClampsAcrossEngineRestart() {
-        let earlier = Xray.TrafficSnapshot(
+        let earlier = XrayTrafficSnapshot(
             taken: Date(timeIntervalSince1970: 1_000),
-            outbound: ["proxy": Xray.TrafficCounter(up: 9_000, down: 9_000)]
+            outbound: ["proxy": XrayTrafficCounter(up: 9_000, down: 9_000)]
         )
-        let later = Xray.TrafficSnapshot(
+        let later = XrayTrafficSnapshot(
             taken: Date(timeIntervalSince1970: 1_001),
-            outbound: ["proxy": Xray.TrafficCounter(up: 10, down: 20)]
+            outbound: ["proxy": XrayTrafficCounter(up: 10, down: 20)]
         )
         let delta = later.delta(since: earlier)
         XCTAssertEqual(delta.totalUp, 10)
@@ -225,11 +225,11 @@ final class TrafficTests: XCTestCase {
     func testLiveMetricsEndpointServes() async throws {
         let port = try Xray.shared.verifyAvailablePorts(count: 1)[0]
         let config = try buildMetricsConfig(port: port)
-        let session = Xray.Session()
+        let session = XraySession()
         try session.start(config)
         defer { try? session.stop() }
-        let monitor = Xray.TrafficMonitor(port: port)
-        var snapshot: Xray.TrafficSnapshot?
+        let monitor = XrayTrafficMonitor(port: port)
+        var snapshot: XrayTrafficSnapshot?
         for _ in 0 ..< 40 {
             if let got = try? await monitor.snapshot() {
                 snapshot = got
@@ -244,7 +244,7 @@ final class TrafficTests: XCTestCase {
         let metricsPort = try Xray.shared.verifyAvailablePorts(count: 2)
         let socksPort = metricsPort[1]
         let base = #"{"outbounds":[{"protocol":"freedom","tag":"direct"}]}"#
-        let config = try Xray.Session().build(
+        let config = try XraySession().build(
             .json(base),
             options: .init(
                 transform: { dict in
@@ -259,11 +259,11 @@ final class TrafficTests: XCTestCase {
                 metricsPort: metricsPort[0]
             )
         )
-        let session = Xray.Session()
+        let session = XraySession()
         try session.start(config)
         defer { try? session.stop() }
-        let monitor = Xray.TrafficMonitor(port: metricsPort[0])
-        var first: Xray.TrafficSnapshot?
+        let monitor = XrayTrafficMonitor(port: metricsPort[0])
+        var first: XrayTrafficSnapshot?
         for _ in 0 ..< 40 {
             if let got = try? await monitor.snapshot() {
                 first = got
@@ -283,7 +283,7 @@ final class TrafficTests: XCTestCase {
         ]
         let probeSession = URLSession(configuration: proxyConfig)
         _ = try? await probeSession.data(from: URL(string: "http://127.0.0.1:\(metricsPort[0])/debug/vars")!)
-        var after: Xray.TrafficSnapshot?
+        var after: XrayTrafficSnapshot?
         for _ in 0 ..< 40 {
             if let got = try? await monitor.snapshot(), got.totalDown > before.totalDown {
                 after = got
@@ -295,16 +295,16 @@ final class TrafficTests: XCTestCase {
     }
 
     func testMonitorRejectsBadPort() async {
-        let monitor = Xray.TrafficMonitor(port: 0)
+        let monitor = XrayTrafficMonitor(port: 0)
         do {
             _ = try await monitor.snapshot()
             XCTFail("expected .invalidInput")
-        } catch let error as Xray.Error {
+        } catch let error as XrayError {
             guard case .invalidInput = error else {
                 return XCTFail("expected .invalidInput, got \(error)")
             }
         } catch {
-            XCTFail("expected Xray.Error, got \(error)")
+            XCTFail("expected XrayError, got \(error)")
         }
     }
 }

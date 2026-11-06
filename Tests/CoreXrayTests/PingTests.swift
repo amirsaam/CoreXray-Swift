@@ -5,16 +5,16 @@ import XCTest
 // positive timeout, absolute HTTP(S) URL, engine stopped, optional tag.
 
 final class PingTests: XCTestCase {
-    private func invalidInput(_ expression: @autoclosure () throws -> [Xray.PingResult]) {
+    private func invalidInput(_ expression: @autoclosure () throws -> [XrayPingResult]) {
         do {
             _ = try expression()
             XCTFail("expected .invalidInput")
-        } catch let error as Xray.Error {
+        } catch let error as XrayError {
             guard case .invalidInput = error else {
                 return XCTFail("expected .invalidInput, got \(error)")
             }
         } catch {
-            XCTFail("expected Xray.Error, got \(error)")
+            XCTFail("expected XrayError, got \(error)")
         }
     }
 
@@ -23,26 +23,26 @@ final class PingTests: XCTestCase {
     }
 
     func testMoreThanFiveTargetsThrow() {
-        let targets = (0..<6).map { _ in Xray.PingTarget(config: #"{"outbounds":[]}"#) }
+        let targets = (0..<6).map { _ in XrayPingTarget(config: #"{"outbounds":[]}"#) }
         invalidInput(try Xray.shared.ping(targets))
     }
 
     func testNonPositiveTimeoutThrows() {
-        let target = Xray.PingTarget(config: #"{"outbounds":[]}"#)
-        invalidInput(try Xray.shared.ping([target], options: Xray.PingOptions(timeoutSeconds: 0)))
-        invalidInput(try Xray.shared.ping([target], options: Xray.PingOptions(timeoutSeconds: -3)))
+        let target = XrayPingTarget(config: #"{"outbounds":[]}"#)
+        invalidInput(try Xray.shared.ping([target], options: XrayPingOptions(timeoutSeconds: 0)))
+        invalidInput(try Xray.shared.ping([target], options: XrayPingOptions(timeoutSeconds: -3)))
     }
 
     func testBadTestURLThrows() {
-        let target = Xray.PingTarget(config: #"{"outbounds":[]}"#)
-        invalidInput(try Xray.shared.ping([target], options: Xray.PingOptions(testURL: "not a url")))
-        invalidInput(try Xray.shared.ping([target], options: Xray.PingOptions(testURL: "/relative/path")))
-        invalidInput(try Xray.shared.ping([target], options: Xray.PingOptions(testURL: "ftp://files.example.com/x")))
+        let target = XrayPingTarget(config: #"{"outbounds":[]}"#)
+        invalidInput(try Xray.shared.ping([target], options: XrayPingOptions(testURL: "not a url")))
+        invalidInput(try Xray.shared.ping([target], options: XrayPingOptions(testURL: "/relative/path")))
+        invalidInput(try Xray.shared.ping([target], options: XrayPingOptions(testURL: "ftp://files.example.com/x")))
     }
 
     func testNilOutboundTagEncodesAsNull() throws {
-        let data = try JSONEncoder().encode(Xray.PingTarget(config: #"{"outbounds":[]}"#))
-        let value = try JSONDecoder().decode(Xray.JSONValue.self, from: data)
+        let data = try JSONEncoder().encode(XrayPingTarget(config: #"{"outbounds":[]}"#))
+        let value = try JSONDecoder().decode(XrayJSONValue.self, from: data)
         // A nil tag is omitted from the wire, which the engine reads as
         // empty and auto-selects from.
         XCTAssertNil(value["outboundTag"])
@@ -50,10 +50,10 @@ final class PingTests: XCTestCase {
     }
 
     func testPingWhileRunningThrowsWithoutDisturbingTheEngine() throws {
-        let session = Xray.Session()
+        let session = XraySession()
         try session.start(.json(#"{"outbounds":[{"protocol":"freedom"}]}"#))
         defer { try? session.stop() }
-        let target = Xray.PingTarget(config: #"{"outbounds":[{"protocol":"freedom"}]}"#)
+        let target = XrayPingTarget(config: #"{"outbounds":[{"protocol":"freedom"}]}"#)
         invalidInput(try Xray.shared.ping([target]))
         XCTAssertTrue(try session.isRunning())
     }

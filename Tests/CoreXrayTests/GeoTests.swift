@@ -24,19 +24,19 @@ final class GeoTests: XCTestCase {
     /// A downloader whose transport is the stub. Both databases serve valid
     /// protobuf framing unless a status says otherwise. Bodies are padded
     /// past the "stale" marker the replacement test writes.
-    private func stubbedDownloader(ipStatus: Int = 200, siteStatus: Int = 200) -> Xray.GeoDownloader {
+    private func stubbedDownloader(ipStatus: Int = 200, siteStatus: Int = 200) -> XrayGeoDownloader {
         let framing = Data([0x0A, 0x02, 0x00, 0x00]) + Data(repeating: 0, count: 64)
         HTTPStub.replies = [
             HTTPStub.stubIP: HTTPStub.Reply(status: ipStatus, body: framing),
             HTTPStub.stubSite: HTTPStub.Reply(status: siteStatus, body: framing),
         ]
-        var downloader = Xray.GeoDownloader(geoIPURL: HTTPStub.stubIP, geoSiteURL: HTTPStub.stubSite)
+        var downloader = XrayGeoDownloader(geoIPURL: HTTPStub.stubIP, geoSiteURL: HTTPStub.stubSite)
         downloader.urlSession = HTTPStub.session()
         return downloader
     }
 
     func testDefaultURLsAreValidHTTPS() {
-        for url in [Xray.GeoDownloader.defaultGeoIPURL, Xray.GeoDownloader.defaultGeoSiteURL] {
+        for url in [XrayGeoDownloader.defaultGeoIPURL, XrayGeoDownloader.defaultGeoSiteURL] {
             XCTAssertEqual(url.scheme, "https")
             XCTAssertFalse(url.host?.isEmpty ?? true)
             XCTAssertTrue(url.lastPathComponent.hasSuffix(".dat"))
@@ -61,7 +61,7 @@ final class GeoTests: XCTestCase {
             HTTPStub.stubSite: HTTPStub.Reply(status: 200, body: Data([0x0A])),
             alternate: HTTPStub.Reply(status: 200, body: expected),
         ]
-        var downloader = Xray.GeoDownloader(geoIPURL: HTTPStub.stubIP, geoSiteURL: HTTPStub.stubSite)
+        var downloader = XrayGeoDownloader(geoIPURL: HTTPStub.stubIP, geoSiteURL: HTTPStub.stubSite)
         downloader.urlSession = HTTPStub.session()
         try await downloader.download(into: tempDir, geoSiteURL: alternate)
         XCTAssertEqual(try Data(contentsOf: tempDir.appendingPathComponent("geosite.dat")), expected)
@@ -110,17 +110,17 @@ final class GeoTests: XCTestCase {
     /// with `xray.location.asset` pointed at a temp directory holding an
     /// optional database file. The environment variable is restored after.
     private func buildGeoRouted(
-        options: Xray.Session.Options,
+        options: XraySessionOptions,
         databaseBytes: Data? = nil
-    ) throws -> Xray.Config {
+    ) throws -> XrayConfig {
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         if let databaseBytes {
             try databaseBytes.write(to: tempDir.appendingPathComponent("geosite.dat"))
         }
         setenv("xray.location.asset", tempDir.path, 1)
         defer { unsetenv("xray.location.asset") }
-        let session = Xray.Session()
-        let routing = Xray.Routing(rules: [.init(
+        let session = XraySession()
+        let routing = XrayRouting(rules: [.init(
             domains: ["geosite:category-ir"],
             destination: .direct
         )])
@@ -133,7 +133,7 @@ final class GeoTests: XCTestCase {
         XCTAssertThrowsError(
             try buildGeoRouted(options: .init())
         ) { error in
-            guard case Xray.Error.geoAssets(let message) = error else {
+            guard case XrayError.geoAssets(let message) = error else {
                 return XCTFail("expected .geoAssets, got \(error)")
             }
             XCTAssertTrue(message.contains("geosite.dat"), "message should name the file: \(message)")
@@ -155,7 +155,7 @@ final class GeoTests: XCTestCase {
                 databaseBytes: Data("<!DOCTYPE html>".utf8)
             )
         ) { error in
-            guard case Xray.Error.geoAssets = error else {
+            guard case XrayError.geoAssets = error else {
                 return XCTFail("expected .geoAssets, got \(error)")
             }
         }
@@ -166,8 +166,8 @@ final class GeoTests: XCTestCase {
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         setenv("xray.location.asset", tempDir.path, 1)
         defer { unsetenv("xray.location.asset") }
-        let session = Xray.Session()
-        let routing = Xray.Routing(rules: [
+        let session = XraySession()
+        let routing = XrayRouting(rules: [
             .init(domains: ["example.com"], destination: .proxy),
             .init(ips: ["10.0.0.0/8"], destination: .direct),
         ], final: .proxy)
@@ -183,16 +183,16 @@ final class GeoTests: XCTestCase {
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         setenv("xray.location.asset", tempDir.path, 1)
         defer { unsetenv("xray.location.asset") }
-        let session = Xray.Session()
+        let session = XraySession()
         XCTAssertThrowsError(
             try session.build(
                 .json(routableJSON),
-                options: .init(dns: Xray.DNS(
+                options: .init(dns: XrayDNS(
                     hosts: ["geosite:malware": "127.0.0.1"]
                 ))
             )
         ) { error in
-            guard case Xray.Error.geoAssets = error else {
+            guard case XrayError.geoAssets = error else {
                 return XCTFail("expected .geoAssets, got \(error)")
             }
         }
@@ -203,8 +203,8 @@ final class GeoTests: XCTestCase {
         // document itself ships the asset path.
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         try Data([0x0A, 0x02, 0x00, 0x00]).write(to: tempDir.appendingPathComponent("geosite.dat"))
-        let session = Xray.Session()
-        let routing = Xray.Routing(rules: [.init(domains: ["geosite:category-ir"], destination: .direct)])
+        let session = XraySession()
+        let routing = XrayRouting(rules: [.init(domains: ["geosite:category-ir"], destination: .direct)])
         _ = try session.build(.json(routableJSON), options: .init(
             routing: routing,
             environment: ["xray.location.asset": tempDir.path]

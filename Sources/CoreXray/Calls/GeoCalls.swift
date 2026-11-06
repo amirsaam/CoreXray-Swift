@@ -1,6 +1,6 @@
 import Foundation
 
-// Geo database inventory. The download itself (`Xray.GeoDownloader`) needs
+// Geo database inventory. The download itself (`XrayGeoDownloader`) needs
 // no engine; only the inventory read goes through here.
 
 internal final class GeoCalls {
@@ -9,7 +9,7 @@ internal final class GeoCalls {
 
     internal static func writeInventory(
         database: String,
-        kind: Xray.GeoDatabase,
+        kind: XrayGeoDatabase,
         directory: URL
     ) throws -> URL {
         try EngineTransport.acknowledge(
@@ -24,7 +24,7 @@ extension Xray {
     internal struct GeoCatalogRequest: Encodable {
         let directory: String
         let name: String
-        let kind: GeoDatabase
+        let kind: XrayGeoDatabase
 
         func encode(to encoder: any Encoder) throws {
             var container = encoder.container(keyedBy: CodingKeys.self)

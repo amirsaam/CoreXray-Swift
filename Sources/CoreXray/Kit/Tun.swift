@@ -9,150 +9,148 @@ import Foundation
 // as `xray.tun.fd`, the variable Xray-core reads). There is no port and no
 // auth on a TUN entry: traffic arrives as packets, not connections.
 
-extension Xray {
-    public struct TunEntry: Sendable {
-        /// Inbound tag routing rules match on. Defaults to "tunIn".
-        public var tag: String
+public struct XrayTunEntry: Sendable {
+    /// Inbound tag routing rules match on. Defaults to "tunIn".
+    public var tag: String
 
-        /// Kept for the inbound shape only: the engine ignores `listen`
-        /// (and any port) for `protocol: "tun"` — packets arrive on the
-        /// interface, not a socket. Defaults to 127.0.0.1.
-        public var listen: String
+    /// Kept for the inbound shape only: the engine ignores `listen`
+    /// (and any port) for `protocol: "tun"` — packets arrive on the
+    /// interface, not a socket. Defaults to 127.0.0.1.
+    public var listen: String
 
-        /// Interface name the engine creates (e.g. "utun10"). Nil leaves the
-        /// engine's default. Only used when the engine creates the interface
-        /// itself (macOS); ignored when a descriptor is passed in.
-        public var name: String?
+    /// Interface name the engine creates (e.g. "utun10"). Nil leaves the
+    /// engine's default. Only used when the engine creates the interface
+    /// itself (macOS); ignored when a descriptor is passed in.
+    public var name: String?
 
-        /// Interface MTU. Defaults to 1500.
-        public var mtu: Int
+    /// Interface MTU. Defaults to 1500.
+    public var mtu: Int
 
-        /// Address prefixes assigned to the interface, e.g.
-        /// ["198.18.0.1/15", "fc00::1/64"]. On macOS only IPv4 takes effect.
-        /// Nil leaves interface addressing to the platform.
-        public var gateway: [String]?
+    /// Address prefixes assigned to the interface, e.g.
+    /// ["198.18.0.1/15", "fc00::1/64"]. On macOS only IPv4 takes effect.
+    /// Nil leaves interface addressing to the platform.
+    public var gateway: [String]?
 
-        /// Policy level for connections through this entry. Nil means 0.
-        public var userLevel: Int?
+    /// Policy level for connections through this entry. Nil means 0.
+    public var userLevel: Int?
 
-        /// Destination prefixes the engine adds to the system routing table
-        /// itself, e.g. ["0.0.0.0/0", "::/0"]. Nil means you route manually.
-        public var autoSystemRoutingTable: [String]?
+    /// XrayDestination prefixes the engine adds to the system routing table
+    /// itself, e.g. ["0.0.0.0/0", "::/0"]. Nil means you route manually.
+    public var autoSystemRoutingTable: [String]?
 
-        /// DNS servers the engine puts on the interface. The one engine
-        /// TUN field that matters on Apple platforms (the Windows-only
-        /// leak/DNS helpers and the cosmetic `desc` are deliberately not
-        /// exposed). Nil leaves interface DNS alone.
-        public var dns: [String]?
+    /// XrayDNS servers the engine puts on the interface. The one engine
+    /// TUN field that matters on Apple platforms (the Windows-only
+    /// leak/XrayDNS helpers and the cosmetic `desc` are deliberately not
+    /// exposed). Nil leaves interface XrayDNS alone.
+    public var dns: [String]?
 
-        /// Physical interface Xray's own traffic binds to, so it never loops
-        /// back into the tunnel. "auto" lets the engine choose. Nil means
-        /// the engine decides — including its own rule that a system
-        /// routing table without an explicit interface implies "auto",
-        /// which the wire object makes explicit so the document shows what
-        /// the engine will do.
-        public var autoOutboundsInterface: String?
+    /// Physical interface Xray's own traffic binds to, so it never loops
+    /// back into the tunnel. "auto" lets the engine choose. Nil means
+    /// the engine decides — including its own rule that a system
+    /// routing table without an explicit interface implies "auto",
+    /// which the wire object makes explicit so the document shows what
+    /// the engine will do.
+    public var autoOutboundsInterface: String?
 
-        /// The TUN file descriptor from the app or NetworkExtension that owns
-        /// the interface (iOS/Android). Written into the document's `env` as
-        /// `xray.tun.fd`. Nil means the engine creates the interface itself
-        /// (the macOS path) — no descriptor needed.
-        public var fileDescriptor: Int32?
+    /// The TUN file descriptor from the app or NetworkExtension that owns
+    /// the interface (iOS/Android). Written into the document's `env` as
+    /// `xray.tun.fd`. Nil means the engine creates the interface itself
+    /// (the macOS path) — no descriptor needed.
+    public var fileDescriptor: Int32?
 
-        /// Carried verbatim; nil (the default) leaves the entry without
-        /// its own sniffing, so it receives the session's through the
-        /// normal pipeline.
-        public var sniffing: Xray.Sniffing?
+    /// Carried verbatim; nil (the default) leaves the entry without
+    /// its own sniffing, so it receives the session's through the
+    /// normal pipeline.
+    public var sniffing: XraySniffing?
 
-        internal init(
-            tag: String = "tunIn",
-            listen: String = "127.0.0.1",
-            name: String? = nil,
-            mtu: Int = 1500,
-            gateway: [String]? = nil,
-            dns: [String]? = nil,
-            userLevel: Int? = nil,
-            autoSystemRoutingTable: [String]? = nil,
-            autoOutboundsInterface: String? = nil,
-            fileDescriptor: Int32? = nil,
-            sniffing: Xray.Sniffing? = nil
-        ) {
-            self.tag = tag
-            self.listen = listen
-            self.name = name
-            self.mtu = mtu
-            self.gateway = gateway
-            self.dns = dns
-            self.userLevel = userLevel
-            self.autoSystemRoutingTable = autoSystemRoutingTable
-            self.autoOutboundsInterface = autoOutboundsInterface
-            self.fileDescriptor = fileDescriptor
-            self.sniffing = sniffing
+    internal init(
+        tag: String = "tunIn",
+        listen: String = "127.0.0.1",
+        name: String? = nil,
+        mtu: Int = 1500,
+        gateway: [String]? = nil,
+        dns: [String]? = nil,
+        userLevel: Int? = nil,
+        autoSystemRoutingTable: [String]? = nil,
+        autoOutboundsInterface: String? = nil,
+        fileDescriptor: Int32? = nil,
+        sniffing: XraySniffing? = nil
+    ) {
+        self.tag = tag
+        self.listen = listen
+        self.name = name
+        self.mtu = mtu
+        self.gateway = gateway
+        self.dns = dns
+        self.userLevel = userLevel
+        self.autoSystemRoutingTable = autoSystemRoutingTable
+        self.autoOutboundsInterface = autoOutboundsInterface
+        self.fileDescriptor = fileDescriptor
+        self.sniffing = sniffing
+    }
+
+    var wireObject: XrayJSONObject {
+        var settings: XrayJSONObject = ["mtu": .int(mtu)]
+        if let name {
+            settings["name"] = .string(name)
         }
-
-        var wireObject: JSONObject {
-            var settings: JSONObject = ["mtu": .int(mtu)]
-            if let name {
-                settings["name"] = .string(name)
-            }
-            if let gateway {
-                settings["gateway"] = .array(gateway.map(JSONValue.string))
-            }
-            if let dns {
-                settings["dns"] = .array(dns.map(JSONValue.string))
-            }
-            if let userLevel {
-                settings["userLevel"] = .int(userLevel)
-            }
-            if let autoSystemRoutingTable {
-                settings["autoSystemRoutingTable"] = .array(autoSystemRoutingTable.map(JSONValue.string))
-            }
-            if let autoOutboundsInterface {
-                settings["autoOutboundsInterface"] = .string(autoOutboundsInterface)
-            } else if let autoSystemRoutingTable, !autoSystemRoutingTable.isEmpty {
-                // Mirror of the engine's own default (`TunConfig.Build` in
-                // Xray-core's infra/conf/tun.go): a routing table without an
-                // explicit interface implies "auto", so the wire says what
-                // the engine would do anyway. Without a table the engine
-                // leaves the key unset — and forcing "auto" there breaks
-                // descriptor hand-off, so this does not.
-                settings["autoOutboundsInterface"] = .string("auto")
-            }
-            var entry: JSONObject = [
-                "tag": .string(tag),
-                "protocol": .string("tun"),
-                "listen": .string(listen),
-                "settings": .object(settings),
-            ]
-            if let sniffing {
-                entry["sniffing"] = .object(sniffing.wireObject)
-            }
-            return entry
+        if let gateway {
+            settings["gateway"] = .array(gateway.map(XrayJSONValue.string))
         }
-
-        /// Keeps the launch environment faithful to this entry. With a
-        /// descriptor, the fd is merged into the document's `env` as
-        /// `xray.tun.fd`, preserving keys already there. Without one, any fd
-        /// left in the process environment by an earlier TUN session is
-        /// cleared: the engine applies document `env` entries into its own
-        /// process at start and never unsets them, so a stale descriptor
-        /// would hijack the next fd-less launch and make it read a dead fd
-        /// instead of creating its own interface.
-        func applyEnvironment(to config: inout JSONObject) {
-            if let fileDescriptor {
-                var env = config["env"]?.objectValue ?? [:]
-                env["xray.tun.fd"] = .string("\(fileDescriptor)")
-                config["env"] = .object(env)
-            } else {
-                Self.clearStaleFileDescriptor()
-            }
+        if let dns {
+            settings["dns"] = .array(dns.map(XrayJSONValue.string))
         }
-
-        /// Both spellings the engine's environment lookup accepts.
-        static func clearStaleFileDescriptor() {
-            unsetenv("xray.tun.fd")
-            unsetenv("XRAY_TUN_FD")
+        if let userLevel {
+            settings["userLevel"] = .int(userLevel)
         }
+        if let autoSystemRoutingTable {
+            settings["autoSystemRoutingTable"] = .array(autoSystemRoutingTable.map(XrayJSONValue.string))
+        }
+        if let autoOutboundsInterface {
+            settings["autoOutboundsInterface"] = .string(autoOutboundsInterface)
+        } else if let autoSystemRoutingTable, !autoSystemRoutingTable.isEmpty {
+            // Mirror of the engine's own default (`TunConfig.Build` in
+            // Xray-core's infra/conf/tun.go): a routing table without an
+            // explicit interface implies "auto", so the wire says what
+            // the engine would do anyway. Without a table the engine
+            // leaves the key unset — and forcing "auto" there breaks
+            // descriptor hand-off, so this does not.
+            settings["autoOutboundsInterface"] = .string("auto")
+        }
+        var entry: XrayJSONObject = [
+            "tag": .string(tag),
+            "protocol": .string("tun"),
+            "listen": .string(listen),
+            "settings": .object(settings),
+        ]
+        if let sniffing {
+            entry["sniffing"] = .object(sniffing.wireObject)
+        }
+        return entry
+    }
+
+    /// Keeps the launch environment faithful to this entry. With a
+    /// descriptor, the fd is merged into the document's `env` as
+    /// `xray.tun.fd`, preserving keys already there. Without one, any fd
+    /// left in the process environment by an earlier TUN session is
+    /// cleared: the engine applies document `env` entries into its own
+    /// process at start and never unsets them, so a stale descriptor
+    /// would hijack the next fd-less launch and make it read a dead fd
+    /// instead of creating its own interface.
+    func applyEnvironment(to config: inout XrayJSONObject) {
+        if let fileDescriptor {
+            var env = config["env"]?.objectValue ?? [:]
+            env["xray.tun.fd"] = .string("\(fileDescriptor)")
+            config["env"] = .object(env)
+        } else {
+            Self.clearStaleFileDescriptor()
+        }
+    }
+
+    /// Both spellings the engine's environment lookup accepts.
+    static func clearStaleFileDescriptor() {
+        unsetenv("xray.tun.fd")
+        unsetenv("XRAY_TUN_FD")
     }
 }
 
@@ -170,12 +168,12 @@ extension Xray {
         autoSystemRoutingTable: [String]? = nil,
         autoOutboundsInterface: String? = nil,
         fileDescriptor: Int32? = nil,
-        sniffing: Xray.Sniffing? = nil
-    ) throws -> TunEntry {
+        sniffing: XraySniffing? = nil
+    ) throws -> XrayTunEntry {
         if let fileDescriptor, fileDescriptor < 0 {
-            throw Error.invalidInput("tun fileDescriptor must be non-negative, got \(fileDescriptor)")
+            throw XrayError.invalidInput("tun fileDescriptor must be non-negative, got \(fileDescriptor)")
         }
-        return TunEntry(
+        return XrayTunEntry(
             tag: tag, listen: listen, name: name, mtu: mtu, gateway: gateway,
             dns: dns, userLevel: userLevel, autoSystemRoutingTable: autoSystemRoutingTable,
             autoOutboundsInterface: autoOutboundsInterface,
@@ -205,7 +203,7 @@ extension Xray {
               let socket = packetFlow.value(forKey: "socket") as? NSObject,
               socket.responds(to: NSSelectorFromString("fileDescriptor")),
               let raw = socket.value(forKey: "fileDescriptor") else {
-            throw Error.invalidInput(
+            throw XrayError.invalidInput(
                 "could not read the provider utun file descriptor: the flow object has no socket.fileDescriptor"
             )
         }
@@ -215,12 +213,12 @@ extension Xray {
         } else if let direct = raw as? Int32 {
             fd = direct
         } else {
-            throw Error.invalidInput(
+            throw XrayError.invalidInput(
                 "the provider utun file descriptor has an unexpected type and cannot be handed to the engine"
             )
         }
         guard fd >= 0 else {
-            throw Error.invalidInput("the provider utun file descriptor is negative (\(fd))")
+            throw XrayError.invalidInput("the provider utun file descriptor is negative (\(fd))")
         }
         return fd
     }

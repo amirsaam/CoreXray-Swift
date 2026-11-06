@@ -50,7 +50,7 @@ final class SupervisionTests: XCTestCase {
         let session = Xray.shared.newSession()
         _ = try session.build(.json(minimalJSON))
         XCTAssertThrowsError(try session.recentEngineLogs(.error)) { error in
-            guard case Xray.Error.invalidInput(let message) = error else {
+            guard case XrayError.invalidInput(let message) = error else {
                 return XCTFail("expected .invalidInput, got \(error)")
             }
             XCTAssertTrue(message.contains("file path"))
@@ -88,7 +88,7 @@ final class SupervisionTests: XCTestCase {
         XCTAssertThrowsError(
             try Xray.shared.trafficWatchdog(port: 0, onStall: {})
         ) { error in
-            guard case Xray.Error.invalidInput = error else {
+            guard case XrayError.invalidInput = error else {
                 return XCTFail("expected .invalidInput, got \(error)")
             }
         }
@@ -126,7 +126,7 @@ final class SupervisionTests: XCTestCase {
         XCTAssertThrowsError(
             try Xray.shared.newSession().preflightForProvider(.json(minimalJSON))
         ) { error in
-            guard case Xray.Error.invalidInput(let message) = error else {
+            guard case XrayError.invalidInput(let message) = error else {
                 return XCTFail("expected .invalidInput, got \(error)")
             }
             XCTAssertTrue(message.contains("no tun inbound"), "message should name the gap: \(message)")
@@ -141,7 +141,7 @@ final class SupervisionTests: XCTestCase {
                 .json(json), options: Xray.shared.options(tun: tun)
             )
         ) { error in
-            guard case Xray.Error.invalidInput(let message) = error else {
+            guard case XrayError.invalidInput(let message) = error else {
                 return XCTFail("expected .invalidInput, got \(error)")
             }
             XCTAssertTrue(message.contains("loopback"), "message should name the rule: \(message)")
@@ -163,7 +163,7 @@ final class SupervisionTests: XCTestCase {
                 .json(minimalJSON), options: Xray.shared.options(tun: tun)
             )
         ) { error in
-            guard case Xray.Error.invalidInput(let message) = error else {
+            guard case XrayError.invalidInput(let message) = error else {
                 return XCTFail("expected .invalidInput, got \(error)")
             }
             XCTAssertTrue(message.contains("file descriptor"), "message should name the gap: \(message)")
@@ -202,12 +202,12 @@ final class SupervisionTests: XCTestCase {
                 remoteSubscription: URL(string: "https://invalid-domain-that-does-not-exist-12345.com/feed.txt")!
             )
             XCTFail("expected a throw")
-        } catch let error as Xray.Error {
+        } catch let error as XrayError {
             guard case .bridgeFailed = error else {
                 return XCTFail("expected .bridgeFailed, got \(error)")
             }
         } catch {
-            XCTFail("expected Xray.Error, got \(error)")
+            XCTFail("expected XrayError, got \(error)")
         }
         XCTAssertNil(session.connectedSince)
     }
@@ -220,13 +220,13 @@ final class SupervisionTests: XCTestCase {
         do {
             try await session.start(remoteSubscription: feed)
             XCTFail("expected a throw")
-        } catch let error as Xray.Error {
+        } catch let error as XrayError {
             guard case .invalidInput(let message) = error else {
                 return XCTFail("expected .invalidInput, got \(error)")
             }
             XCTAssertTrue(message.contains("cap"), "message should name the cap: \(message)")
         } catch {
-            XCTFail("expected Xray.Error, got \(error)")
+            XCTFail("expected XrayError, got \(error)")
         }
         XCTAssertNil(session.connectedSince)
     }
@@ -239,13 +239,13 @@ final class SupervisionTests: XCTestCase {
         do {
             try await session.start(remoteSubscription: HTTPStub.stubFeed)
             XCTFail("expected a throw")
-        } catch let error as Xray.Error {
+        } catch let error as XrayError {
             guard case .bridgeFailed(let message) = error else {
                 return XCTFail("expected .bridgeFailed, got \(error)")
             }
             XCTAssertTrue(message.contains("404"), "message should name the status: \(message)")
         } catch {
-            XCTFail("expected Xray.Error, got \(error)")
+            XCTFail("expected XrayError, got \(error)")
         }
         XCTAssertNil(session.connectedSince)
     }
@@ -262,19 +262,19 @@ final class SupervisionTests: XCTestCase {
         do {
             try await session.start(remoteSubscription: HTTPStub.stubFeed)
             XCTFail("expected a throw")
-        } catch let error as Xray.Error {
+        } catch let error as XrayError {
             guard case .invalidInput(let message) = error else {
                 return XCTFail("expected .invalidInput, got \(error)")
             }
             XCTAssertTrue(message.contains("cap"), "message should name the cap: \(message)")
         } catch {
-            XCTFail("expected Xray.Error, got \(error)")
+            XCTFail("expected XrayError, got \(error)")
         }
         XCTAssertNil(session.connectedSince)
     }
 
     func testSessionConformsToProviding() throws {
-        let providing: Xray.XraySessionProviding = Xray.shared.newSession()
+        let providing: XraySessionProviding = Xray.shared.newSession()
         let config = try providing.build(.json(minimalJSON))
         XCTAssertTrue(config.json.contains("freedom"))
         XCTAssertTrue(providing.recentLogs().contains(where: { $0.contains("assembled") }))

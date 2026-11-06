@@ -3,7 +3,7 @@ import XCTest
 
 // Third-party audit follow-ups: restart semantics, deadline bounds, provider
 // preflight gaps, TUN defaults, log-path retention, one-sided traffic,
-// sniffing inheritance, the DNS relay route, ping sentinel handling,
+// sniffing inheritance, the XrayDNS relay route, ping sentinel handling,
 // geo candidate order, the timedOut case, and watchdog restart behavior.
 
 final class AuditFixTests: XCTestCase {
@@ -24,8 +24,8 @@ final class AuditFixTests: XCTestCase {
         super.tearDown()
     }
 
-    private func decoded(_ json: String) throws -> Xray.JSONValue {
-        try JSONDecoder().decode(Xray.JSONValue.self, from: Data(json.utf8))
+    private func decoded(_ json: String) throws -> XrayJSONValue {
+        try JSONDecoder().decode(XrayJSONValue.self, from: Data(json.utf8))
     }
 
     // MARK: - H1: second start replaces the first
@@ -106,9 +106,9 @@ final class AuditFixTests: XCTestCase {
     // MARK: - M1: one-sided traffic
 
     func testUplinkCountsOutboundSideOnly() {
-        let first = Xray.TrafficSnapshot(
-            inbound: ["tun-in": Xray.TrafficCounter(up: 100, down: 200)],
-            outbound: ["proxy": Xray.TrafficCounter(up: 60, down: 140)]
+        let first = XrayTrafficSnapshot(
+            inbound: ["tun-in": XrayTrafficCounter(up: 100, down: 200)],
+            outbound: ["proxy": XrayTrafficCounter(up: 60, down: 140)]
         )
         // Totals double-count (inbound + outbound sides of the same bytes).
         XCTAssertEqual(first.totalUp, 160)
@@ -116,9 +116,9 @@ final class AuditFixTests: XCTestCase {
         // One-sided counters count the outbound side only.
         XCTAssertEqual(first.uplink, 60)
         XCTAssertEqual(first.downlink, 140)
-        let later = Xray.TrafficSnapshot(
-            inbound: ["tun-in": Xray.TrafficCounter(up: 150, down: 260)],
-            outbound: ["proxy": Xray.TrafficCounter(up: 160, down: 240)]
+        let later = XrayTrafficSnapshot(
+            inbound: ["tun-in": XrayTrafficCounter(up: 150, down: 260)],
+            outbound: ["proxy": XrayTrafficCounter(up: 160, down: 240)]
         )
         let delta = later.delta(since: first)
         XCTAssertEqual(delta.totalUp, 150)
@@ -129,9 +129,9 @@ final class AuditFixTests: XCTestCase {
     // MARK: - M2: entries inherit assembly sniffing
 
     func testAssemblySniffingReachesDefaultEntries() throws {
-        let config = try Xray.Assembly(
+        let config = try XrayAssembly(
             source: .shareLinks(link),
-            socks: Xray.Assembly.SocksEntry(port: 18085),
+            socks: XrayAssemblySocksEntry(port: 18085),
             sniffing: Xray.shared.sniffing(destOverride: ["tls"], routeOnly: true)
         ).assemble()
         let sniffing = try decoded(config.json)["inbounds"]?.arrayValue?
@@ -141,9 +141,9 @@ final class AuditFixTests: XCTestCase {
     }
 
     func testExplicitEntrySniffingWins() throws {
-        let config = try Xray.Assembly(
+        let config = try XrayAssembly(
             source: .shareLinks(link),
-            socks: Xray.Assembly.SocksEntry(
+            socks: XrayAssemblySocksEntry(
                 port: 18086,
                 sniffing: Xray.shared.sniffing(destOverride: ["http"], routeOnly: true)
             ),
@@ -216,17 +216,17 @@ final class AuditFixTests: XCTestCase {
     func testPingFailureNormalizesSentinelDelay() throws {
         let decoder = JSONDecoder()
         let timeout = try decoder.decode(
-            Xray.PingResult.self, from: Data(#"{"success":false,"delay":10000,"error":"timeout"}"#.utf8)
+            XrayPingResult.self, from: Data(#"{"success":false,"delay":10000,"error":"timeout"}"#.utf8)
         )
         XCTAssertFalse(timeout.succeeded)
         XCTAssertEqual(timeout.latencyMilliseconds, 0)
         XCTAssertEqual(timeout.failureReason, "timeout")
         let routing = try decoder.decode(
-            Xray.PingResult.self, from: Data(#"{"success":false,"delay":11000,"error":"routing"}"#.utf8)
+            XrayPingResult.self, from: Data(#"{"success":false,"delay":11000,"error":"routing"}"#.utf8)
         )
         XCTAssertEqual(routing.latencyMilliseconds, 0)
         let ok = try decoder.decode(
-            Xray.PingResult.self, from: Data(#"{"success":true,"delay":42}"#.utf8)
+            XrayPingResult.self, from: Data(#"{"success":true,"delay":42}"#.utf8)
         )
         XCTAssertTrue(ok.succeeded)
         XCTAssertEqual(ok.latencyMilliseconds, 42)
@@ -250,7 +250,7 @@ final class AuditFixTests: XCTestCase {
     // MARK: - L1: the timedOut case
 
     func testTimedOutCarriesHint() {
-        let error = Xray.Error.timedOut("the bridge did not answer within 5.0s; it may be wedged")
+        let error = XrayError.timedOut("the bridge did not answer within 5.0s; it may be wedged")
         XCTAssertNotNil(error.errorDescription)
         XCTAssertFalse(error.recoveryHint?.isEmpty ?? true)
     }
@@ -284,7 +284,7 @@ final class AuditFixTests: XCTestCase {
         do {
             try await session.start(.json(minimalJSON), deadline: .milliseconds(50))
             XCTFail("expected .timedOut")
-        } catch let error as Xray.Error {
+        } catch let error as XrayError {
             guard case .timedOut = error else {
                 return XCTFail("wrong error: \(error)")
             }

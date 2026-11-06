@@ -48,15 +48,15 @@ final class ProviderFlowTests: XCTestCase {
         XCTAssertTrue(try session.isRunning())
     }
 
-    // MARK: - Assembly-time guards
+    // MARK: - XrayAssembly-time guards
 
     func testObservatoryWithoutMetricsPortThrowsAtBuild() throws {
         let observatory = Xray.shared.observatory(subjectSelector: ["direct"])
         let options = Xray.shared.options(observatory: observatory)
         XCTAssertThrowsError(
-            try Xray.Session().build(.json(minimalJSON), options: options)
+            try XraySession().build(.json(minimalJSON), options: options)
         ) { error in
-            guard case Xray.Error.invalidInput(let message) = error else {
+            guard case XrayError.invalidInput(let message) = error else {
                 return XCTFail("expected .invalidInput, got \(error)")
             }
             XCTAssertTrue(message.contains("metricsPort"), "message should name the missing field: \(message)")
@@ -74,7 +74,7 @@ final class ProviderFlowTests: XCTestCase {
         XCTAssertThrowsError(
             try Xray.shared.providerFileDescriptor(from: FakeFlow(nil))
         ) { error in
-            guard case Xray.Error.invalidInput = error else {
+            guard case XrayError.invalidInput = error else {
                 return XCTFail("expected .invalidInput, got \(error)")
             }
         }
@@ -84,7 +84,7 @@ final class ProviderFlowTests: XCTestCase {
         XCTAssertThrowsError(
             try Xray.shared.providerFileDescriptor(from: FakeFlow(FakeSocket(-1)))
         ) { error in
-            guard case Xray.Error.invalidInput = error else {
+            guard case XrayError.invalidInput = error else {
                 return XCTFail("expected .invalidInput, got \(error)")
             }
         }
@@ -105,7 +105,7 @@ final class ProviderFlowTests: XCTestCase {
     }
 
     func testEnsureAssetsWithPlainConfigDownloadsNothing() async throws {
-        let config = try Xray.Session().build(.json(minimalJSON))
+        let config = try XraySession().build(.json(minimalJSON))
         let directory = try await Xray.shared.ensureAssets(
             for: config, in: tempDir, geoIPURL: unreachable, geoSiteURL: unreachable
         )
@@ -116,7 +116,7 @@ final class ProviderFlowTests: XCTestCase {
 
     func testEnsureAssetsDownloadsOnlyReferencedDatabase() async throws {
         let json = #"{"log":{"loglevel":"warning"},"inbounds":[],"outbounds":[{"tag":"proxy","protocol":"freedom"}],"routing":{"rules":[{"type":"field","domain":["geosite:google"],"outboundTag":"proxy"}]}}"#
-        let config = try Xray.Session().build(.json(json), options: .init(geoCheck: false))
+        let config = try XraySession().build(.json(json), options: .init(geoCheck: false))
         HTTPStub.replies = [HTTPStub.stubSite: HTTPStub.Reply(status: 200, body: Data([0x0A, 0x02, 0x00, 0x00]))]
         defer { HTTPStub.replies = [:] }
         var downloader = Xray.shared.geoDownloader(geoSiteURL: HTTPStub.stubSite)

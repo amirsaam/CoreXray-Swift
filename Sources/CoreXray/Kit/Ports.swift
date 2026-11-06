@@ -23,7 +23,7 @@ extension Xray {
     /// ports turn up. Prefer it for any port the engine will listen on.
     public func verifyAvailablePorts(count: Int = 1, excluding: [Int] = []) throws -> [Int] {
         guard count > 0 else {
-            throw Error.invalidInput("verifyAvailablePorts needs a count of at least 1")
+            throw XrayError.invalidInput("verifyAvailablePorts needs a count of at least 1")
         }
         return try PortCalls.verify(count: count, excluding: excluding)
     }

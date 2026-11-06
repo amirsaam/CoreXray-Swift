@@ -6,7 +6,7 @@ import XCTest
 
 final class JSONTests: XCTestCase {
     func testLiteralsBuildTrees() {
-        let doc: Xray.JSONValue = ["log": ["loglevel": "warning"], "retries": 3, "debug": false]
+        let doc: XrayJSONValue = ["log": ["loglevel": "warning"], "retries": 3, "debug": false]
         XCTAssertEqual(doc["log"]?["loglevel"], .string("warning"))
         XCTAssertEqual(doc["retries"], .int(3))
         XCTAssertEqual(doc["debug"], .bool(false))
@@ -14,18 +14,18 @@ final class JSONTests: XCTestCase {
     }
 
     func testSubscriptWritesAndRemoves() {
-        var doc: Xray.JSONValue = ["a": 1]
+        var doc: XrayJSONValue = ["a": 1]
         doc["b"] = ["nested": true]
         XCTAssertEqual(doc["b"]?["nested"], .bool(true))
         doc["a"] = nil
         XCTAssertNil(doc["a"])
-        var scalar: Xray.JSONValue = "text"
+        var scalar: XrayJSONValue = "text"
         scalar["key"] = 1
         XCTAssertEqual(scalar, .string("text"), "writing a field onto a scalar must not corrupt it")
     }
 
     func testArraySubscriptBoundsChecked() {
-        var doc: Xray.JSONValue = ["items": [1, 2, 3]]
+        var doc: XrayJSONValue = ["items": [1, 2, 3]]
         XCTAssertEqual(doc["items"]?[5], nil)
         XCTAssertEqual(doc["items"]?[1], .int(2))
         doc["items"]?[1] = 9
@@ -35,13 +35,13 @@ final class JSONTests: XCTestCase {
     }
 
     func testDynamicMemberInspection() {
-        let doc: Xray.JSONValue = ["log": ["loglevel": "warning"]]
+        let doc: XrayJSONValue = ["log": ["loglevel": "warning"]]
         XCTAssertEqual(doc.log?.loglevel?.stringValue, "warning")
         XCTAssertNil(doc.nothing?.anything)
     }
 
     func testCodableRoundTrip() throws {
-        let original: Xray.JSONValue = [
+        let original: XrayJSONValue = [
             "int": 3,
             "double": 1.5,
             "text": "x",
@@ -51,15 +51,15 @@ final class JSONTests: XCTestCase {
             "nested": ["a": 1],
         ]
         let data = try JSONEncoder().encode(original)
-        let revived = try JSONDecoder().decode(Xray.JSONValue.self, from: data)
+        let revived = try JSONDecoder().decode(XrayJSONValue.self, from: data)
         XCTAssertEqual(revived, original)
         XCTAssertEqual(revived["int"], .int(3), "ints must survive as ints, not doubles")
     }
 
     func testInvalidJSONThrowsInvalidInput() {
-        let session = Xray.Session()
+        let session = XraySession()
         XCTAssertThrowsError(try session.build(.json("{oops"))) { error in
-            guard let xrayError = error as? Xray.Error, case .invalidInput = xrayError else {
+            guard let xrayError = error as? XrayError, case .invalidInput = xrayError else {
                 return XCTFail("expected .invalidInput, got \(error)")
             }
         }

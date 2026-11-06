@@ -16,11 +16,11 @@ internal final class ConfigCalls {
                     .configFromShareLinks,
                     payload: Xray.TextSnapshot(text: shareLinks, ageSecret: ageSecret)
                 ),
-                as: Xray.JSONValue.self
+                as: XrayJSONValue.self
             )
         )
         guard case .object = value else {
-            throw Xray.Error.bridgeFailed("engine answered with a document instead of a configuration")
+            throw XrayError.bridgeFailed("engine answered with a document instead of a configuration")
         }
         return try EngineTransport.serialize(value)
     }

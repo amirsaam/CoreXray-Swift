@@ -30,7 +30,7 @@ internal final class EngineTransport {
     internal static func guardRequestSize(_ request: String) throws {
         let bytes = request.utf8.count
         if bytes > maxRequestBytes {
-            throw Xray.Error.invalidInput(
+            throw XrayError.invalidInput(
                 "invoke request exceeds the 16 MiB size limit (requested: \(bytes) bytes)"
             )
         }
@@ -62,10 +62,10 @@ internal final class EngineTransport {
         do {
             data = try JSONEncoder().encode(payload)
         } catch {
-            throw Xray.Error.bridgeFailed("payload could not be encoded: \(error.localizedDescription)")
+            throw XrayError.bridgeFailed("payload could not be encoded: \(error.localizedDescription)")
         }
         guard let text = String(data: data, encoding: .utf8) else {
-            throw Xray.Error.bridgeFailed("payload could not be encoded as UTF-8 JSON")
+            throw XrayError.bridgeFailed("payload could not be encoded as UTF-8 JSON")
         }
         try guardRequestSize(text)
         return rawCall("""
@@ -81,21 +81,21 @@ internal final class EngineTransport {
         do {
             return try JSONDecoder().decode(Xray.EngineEnvelope<Payload>.self, from: Data(response.utf8))
         } catch {
-            throw Xray.Error.bridgeFailed("engine answered with an unreadable envelope")
+            throw XrayError.bridgeFailed("engine answered with an unreadable envelope")
         }
     }
 
-    /// Unwraps an envelope into its payload, raising `Xray.Error` on
+    /// Unwraps an envelope into its payload, raising `XrayError` on
     /// engine-reported failures. For status-only operations the payload is an
     /// empty object, so callers pass that unless they expect structured data.
     internal static func resolved<Payload: Decodable>(
         _ envelope: Xray.EngineEnvelope<Payload>
     ) throws -> Payload {
         guard envelope.succeeded else {
-            throw Xray.Error.engineFailed(envelope.failure ?? "engine failure with no message")
+            throw XrayError.engineFailed(envelope.failure ?? "engine failure with no message")
         }
         guard let payload = envelope.payload else {
-            throw Xray.Error.bridgeFailed("engine reported success but answered without a payload")
+            throw XrayError.bridgeFailed("engine reported success but answered without a payload")
         }
         return payload
     }
@@ -128,21 +128,21 @@ internal final class EngineTransport {
     }
 
     /// Serializes a JSON tree to compact text, keys sorted so two builds of
-    /// the same intent diff cleanly. `JSONValue` is always encodable, so
+    /// the same intent diff cleanly. `XrayJSONValue` is always encodable, so
     /// failure here means programmer error, not bad input.
-    internal static func serialize(_ value: Xray.JSONValue) throws -> String {
+    internal static func serialize(_ value: XrayJSONValue) throws -> String {
         do {
             let encoder = JSONEncoder()
             encoder.outputFormatting = .sortedKeys
             let data = try encoder.encode(value)
             guard let text = String(data: data, encoding: .utf8) else {
-                throw Xray.Error.bridgeFailed("assembled JSON is not valid UTF-8")
+                throw XrayError.bridgeFailed("assembled JSON is not valid UTF-8")
             }
             return text
-        } catch let error as Xray.Error {
+        } catch let error as XrayError {
             throw error
         } catch {
-            throw Xray.Error.bridgeFailed("JSON tree could not be serialized: \(error.localizedDescription)")
+            throw XrayError.bridgeFailed("JSON tree could not be serialized: \(error.localizedDescription)")
         }
     }
 }

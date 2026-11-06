@@ -2,7 +2,7 @@ import Foundation
 
 // Engine lifecycle and identity: version, state, launch, stop, and the raw
 // escape hatch. No validation, no opinions — the friendly layer in
-// `Kit/Lifecycle.swift` and `Xray.Session` decide when these run.
+// `Kit/Lifecycle.swift` and `XraySession` decide when these run.
 
 internal final class LifecycleCalls {
     /// Never instantiated: all members are static.

@@ -7,11 +7,11 @@ final class AssemblyTests: XCTestCase {
     private let link = "vless://12345678-abcd-abcd-abcd-123456789abc@example.com:443?type=tcp&security=tls&encryption=none&sni=example.com#Bridge"
 
     func testFullAssemblyFromShareLink() throws {
-        let session = Xray.Session()
-        let config = try Xray.Assembly(
+        let session = XraySession()
+        let config = try XrayAssembly(
             source: .shareLinks(link),
             remarks: "demo",
-            routing: Xray.Routing(
+            routing: XrayRouting(
                 domainStrategy: .ipIfNonMatch,
                 rules: [
                     .init(inboundTags: ["dns-in"], destination: .dns),
@@ -20,15 +20,15 @@ final class AssemblyTests: XCTestCase {
                 ],
                 final: .proxy
             ),
-            dns: Xray.DNS(
+            dns: XrayDNS(
                 hosts: ["blocked.example.com": "127.0.0.1"],
                 queryStrategy: .useIPv4,
                 servers: [.detailed(address: "fakedns", domains: ["example.com"])]
             ),
-            fakeDNS: [Xray.FakeDNS(ipPool: "198.18.0.0/16", poolSize: 512)],
-            log: Xray.Log(level: .warning, dnsLog: true)
+            fakeDNS: [XrayFakeDNS(ipPool: "198.18.0.0/16", poolSize: 512)],
+            log: XrayLog(level: .warning, dnsLog: true)
         ).assemble()
-        let value = try JSONDecoder().decode(Xray.JSONValue.self, from: Data(config.json.utf8))
+        let value = try JSONDecoder().decode(XrayJSONValue.self, from: Data(config.json.utf8))
 
         // The converted proxy keeps its tag; destinations resolve to it, and
         // the "final" arrives as a trailing match-all rule (no "final" key —
@@ -65,9 +65,9 @@ final class AssemblyTests: XCTestCase {
             .shareLinks(link),
             remarks: "factory",
             socksPort: 10880,
-            routing: Xray.Routing(final: .proxy)
+            routing: XrayRouting(final: .proxy)
         )
-        let value = try JSONDecoder().decode(Xray.JSONValue.self, from: Data(config.json.utf8))
+        let value = try JSONDecoder().decode(XrayJSONValue.self, from: Data(config.json.utf8))
 
         XCTAssertEqual(value["inbounds"]?[0]?["tag"], .string("socks-in"))
         XCTAssertEqual(value["inbounds"]?[0]?["port"], .int(10880))
@@ -79,42 +79,42 @@ final class AssemblyTests: XCTestCase {
 
     func testProxyConfigurationWithoutSocks() throws {
         let config = try Xray.shared.proxyConfiguration(.shareLinks(link), socksPort: nil)
-        let value = try JSONDecoder().decode(Xray.JSONValue.self, from: Data(config.json.utf8))
+        let value = try JSONDecoder().decode(XrayJSONValue.self, from: Data(config.json.utf8))
         XCTAssertNil(value["inbounds"]?.arrayValue?.first(where: { $0["tag"] == .string("socks-in") }))
     }
 
     func testDefaultsCanBeDropped() throws {
-        let config = try Xray.Assembly(
+        let config = try XrayAssembly(
             source: .shareLinks(link),
             socks: nil,
             dnsRelay: nil
         ).assemble()
-        let value = try JSONDecoder().decode(Xray.JSONValue.self, from: Data(config.json.utf8))
+        let value = try JSONDecoder().decode(XrayJSONValue.self, from: Data(config.json.utf8))
         XCTAssertNil(value["inbounds"])
         XCTAssertEqual(value["outbounds"]?[0]?["tag"], .string("Bridge"))
     }
 
     func testPatchRunsLast() throws {
-        let config = try Xray.Assembly(
+        let config = try XrayAssembly(
             source: .shareLinks(link),
             patch: { $0["remarks"] = .string("patched") }
         ).assemble()
-        let value = try JSONDecoder().decode(Xray.JSONValue.self, from: Data(config.json.utf8))
+        let value = try JSONDecoder().decode(XrayJSONValue.self, from: Data(config.json.utf8))
         XCTAssertEqual(value["remarks"], .string("patched"))
         XCTAssertEqual(value["inbounds"]?[0]?["tag"], .string("socks-in"))
     }
 
     func testSocksEntryAuthStartsLive() throws {
-        let session = Xray.Session()
-        let config = try Xray.Assembly(
+        let session = XraySession()
+        let config = try XrayAssembly(
             source: .shareLinks(link),
-            socks: Xray.Assembly.SocksEntry(
+            socks: XrayAssemblySocksEntry(
                 port: 18081,
-                auth: Xray.Credentials(username: "proxy-user", password: "s3cret")
+                auth: XrayCredentials(username: "proxy-user", password: "s3cret")
             ),
             dnsRelay: nil
         ).assemble()
-        let value = try JSONDecoder().decode(Xray.JSONValue.self, from: Data(config.json.utf8))
+        let value = try JSONDecoder().decode(XrayJSONValue.self, from: Data(config.json.utf8))
         XCTAssertEqual(value["inbounds"]?[0]?["settings"]?["auth"], .string("password"))
         XCTAssertEqual(value["inbounds"]?[0]?["settings"]?["users"]?[0]?["user"], .string("proxy-user"))
         try config.validate()
@@ -124,17 +124,17 @@ final class AssemblyTests: XCTestCase {
     }
 
     func testHttpEntryWithAuthStartsLive() throws {
-        let session = Xray.Session()
-        let config = try Xray.Assembly(
+        let session = XraySession()
+        let config = try XrayAssembly(
             source: .shareLinks(link),
             socks: nil,
-            http: Xray.Assembly.HttpEntry(
+            http: XrayAssemblyHttpEntry(
                 port: 18082,
-                auth: Xray.Credentials(username: "web-user", password: "s3cret")
+                auth: XrayCredentials(username: "web-user", password: "s3cret")
             ),
             dnsRelay: nil
         ).assemble()
-        let value = try JSONDecoder().decode(Xray.JSONValue.self, from: Data(config.json.utf8))
+        let value = try JSONDecoder().decode(XrayJSONValue.self, from: Data(config.json.utf8))
         XCTAssertEqual(value["inbounds"]?[0]?["protocol"], .string("http"))
         XCTAssertEqual(
             value["inbounds"]?[0]?["settings"]?["accounts"]?[0]?["user"],
@@ -147,17 +147,17 @@ final class AssemblyTests: XCTestCase {
     }
 
     func testTunAssemblyValidatesLive() throws {
-        let config = try Xray.Assembly(
+        let config = try XrayAssembly(
             source: .shareLinks(link),
             socks: nil,
             dnsRelay: nil,
-            tun: Xray.TunEntry(
+            tun: XrayTunEntry(
                 gateway: ["198.18.0.1/15"],
                 autoSystemRoutingTable: ["0.0.0.0/0"],
                 autoOutboundsInterface: "auto"
             )
         ).assemble()
-        let value = try JSONDecoder().decode(Xray.JSONValue.self, from: Data(config.json.utf8))
+        let value = try JSONDecoder().decode(XrayJSONValue.self, from: Data(config.json.utf8))
         XCTAssertEqual(value["inbounds"]?[0]?["tag"], .string("tunIn"))
         XCTAssertEqual(value["inbounds"]?[0]?["protocol"], .string("tun"))
         // No descriptor in tests: no env key, and the engine still
@@ -166,28 +166,26 @@ final class AssemblyTests: XCTestCase {
         try config.validate()
     }
 
-    func testOutboundsOnlyJSONSource() throws {
-        let session = Xray.Session()
-        let outboundsOnly = """
-        {"outbounds":[{
-            "tag":"proxy0","protocol":"vless",
-            "settings":{"address":"example.com","port":443,
-                        "id":"12345678-abcd-abcd-abcd-123456789abc",
-                        "encryption":"none"},
-            "streamSettings":{"network":"raw","security":"tls",
-                              "tlsSettings":{"serverName":"example.com"}}
-        }]}
+    func testOutboundJsonSource() throws {
+        let session = XraySession()
+        let outboundOnly = """
+        {"tag":"proxy0","protocol":"vless",
+         "settings":{"address":"example.com","port":443,
+                     "id":"12345678-abcd-abcd-abcd-123456789abc",
+                     "encryption":"none"},
+         "streamSettings":{"network":"raw","security":"tls",
+                           "tlsSettings":{"serverName":"example.com"}}}
         """
-        let config = try Xray.Assembly(
-            source: .json(outboundsOnly),
-            socks: Xray.Assembly.SocksEntry(port: 18084),
+        let config = try XrayAssembly(
+            source: .outboundJson(outboundOnly),
+            socks: XrayAssemblySocksEntry(port: 18084),
             dnsRelay: nil,
-            routing: Xray.Routing(
+            routing: XrayRouting(
                 rules: [.init(domains: ["example.com"], destination: .direct)],
                 final: .proxy
             )
         ).assemble()
-        let value = try JSONDecoder().decode(Xray.JSONValue.self, from: Data(config.json.utf8))
+        let value = try JSONDecoder().decode(XrayJSONValue.self, from: Data(config.json.utf8))
         // The provided outbound survives with its tag; destinations resolve.
         XCTAssertEqual(value["outbounds"]?[0]?["tag"], .string("proxy0"))
         XCTAssertNil(value["routing"]?["final"])
@@ -200,11 +198,35 @@ final class AssemblyTests: XCTestCase {
         try session.stop()
     }
 
+    func testOutboundJsonRejectsFullDocument() throws {
+        let full = #"{"inbounds":[],"outbounds":[{"tag":"proxy0","protocol":"freedom"}]}"#
+        XCTAssertThrowsError(try XrayAssembly(source: .outboundJson(full)).assemble()) { error in
+            let message = (error as? XrayError)?.errorDescription ?? ""
+            XCTAssertTrue(message.contains("engine.configuration(.json(...))"), message)
+        }
+    }
+
+    func testOutboundJsonRejectsArray() throws {
+        XCTAssertThrowsError(
+            try XrayAssembly(source: .outboundJson(#"[{"tag":"a","protocol":"freedom"}]"#)).assemble()
+        ) { error in
+            XCTAssertTrue(((error as? XrayError)?.errorDescription ?? "").contains("not an array"))
+        }
+    }
+
+    func testOutboundJsonRejectsMissingTag() throws {
+        XCTAssertThrowsError(
+            try XrayAssembly(source: .outboundJson(#"{"protocol":"freedom"}"#)).assemble()
+        ) { error in
+            XCTAssertTrue(((error as? XrayError)?.errorDescription ?? "").contains("missing its 'tag'"))
+        }
+    }
+
     func testObservatorySectionIsWritten() throws {
-        let session = Xray.Session()
-        let config = try Xray.Assembly(
+        let session = XraySession()
+        let config = try XrayAssembly(
             source: .shareLinks(link),
-            observatory: Xray.Observatory(
+            observatory: XrayObservatory(
                 subjectSelector: ["fast"],
                 probeURL: "https://example.com/generate_204",
                 probeInterval: "30s",
@@ -212,12 +234,12 @@ final class AssemblyTests: XCTestCase {
             ),
             metricsPort: 10085
         ).assemble()
-        let value = try JSONDecoder().decode(Xray.JSONValue.self, from: Data(config.json.utf8))
+        let value = try JSONDecoder().decode(XrayJSONValue.self, from: Data(config.json.utf8))
         XCTAssertEqual(value["observatory"]?["subjectSelector"], .array([.string("fast")]))
         XCTAssertEqual(value["observatory"]?["probeURL"], .string("https://example.com/generate_204"))
         XCTAssertEqual(value["observatory"]?["probeInterval"], .string("30s"))
         XCTAssertEqual(value["observatory"]?["enableConcurrency"], .bool(true))
-        // Observatory results surface through the Metrics endpoint, so the
+        // XrayObservatory results surface through the XrayMetrics endpoint, so the
         // assembly keeps the two sections consistent for you.
         XCTAssertNotNil(value["metrics"])
         try config.validate()

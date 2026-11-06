@@ -37,7 +37,7 @@ internal final class PortCalls {
                 }
             }
         }
-        throw Xray.Error.bridgeFailed("could not find \(count) bindable local ports")
+        throw XrayError.bridgeFailed("could not find \(count) bindable local ports")
     }
 
     /// True when nothing on this machine is listening on `port` for

@@ -31,7 +31,7 @@ final class XrayTests: XCTestCase {
 
     func testShareLinkRoundTrip() throws {
         let link = "vless://12345678-abcd-abcd-abcd-123456789abc@example.com:443?type=tcp&security=tls&encryption=none&sni=example.com#TestLink"
-        let config = try Xray.Config(shareLinks: link)
+        let config = try XrayConfig(shareLinks: link)
         XCTAssertFalse(config.json.isEmpty)
         try config.validate()
         let back = try config.shareLinks()
@@ -39,15 +39,15 @@ final class XrayTests: XCTestCase {
     }
 
     func testInvalidShareLinkThrows() {
-        XCTAssertThrowsError(try Xray.Config(shareLinks: "not-a-link-at-all")) { error in
-            XCTAssertTrue(error is Xray.Error, "expected Xray.Error, got \(type(of: error))")
+        XCTAssertThrowsError(try XrayConfig(shareLinks: "not-a-link-at-all")) { error in
+            XCTAssertTrue(error is XrayError, "expected XrayError, got \(type(of: error))")
         }
     }
 
     func testValidateRejectsGarbage() {
-        XCTAssertThrowsError(try Xray.Config(json: "definitely not json").validate()) { error in
-            guard let xrayError = error as? Xray.Error else {
-                return XCTFail("expected Xray.Error, got \(type(of: error))")
+        XCTAssertThrowsError(try XrayConfig(json: "definitely not json").validate()) { error in
+            guard let xrayError = error as? XrayError else {
+                return XCTFail("expected XrayError, got \(type(of: error))")
             }
             if case .engineFailed(let message) = xrayError {
                 XCTAssertFalse(message.isEmpty)
@@ -75,13 +75,13 @@ final class XrayTests: XCTestCase {
         do {
             _ = try Xray.shared.sendRawRequest(oversized)
             XCTFail("expected a rejection")
-        } catch let error as Xray.Error {
+        } catch let error as XrayError {
             guard case .invalidInput(let message) = error else {
                 return XCTFail("expected .invalidInput, got \(error)")
             }
             XCTAssertTrue(message.contains("16 MiB"), "message should state the bound: \(message)")
         } catch {
-            XCTFail("expected Xray.Error, got \(type(of: error))")
+            XCTFail("expected XrayError, got \(type(of: error))")
         }
     }
 
@@ -89,7 +89,7 @@ final class XrayTests: XCTestCase {
         // Proves the guard only trips its own case: a small garbage request
         // reaches the engine and comes back as an engine failure.
         XCTAssertThrowsError(try Xray.shared.sendRawRequest("{\"apiVersion\":3,\"method\":\"no-such-method\"}")) { error in
-            guard case Xray.Error.engineFailed = error else {
+            guard case XrayError.engineFailed = error else {
                 return XCTFail("expected .engineFailed, got \(error)")
             }
         }
