@@ -36,12 +36,14 @@ internal final class EngineTransport {
         }
     }
 
-    /// Lowest-level call: serializes nothing, checks nothing. Everything
-    /// above goes through the serial lane. A missing engine answer throws
+    /// Lowest-level call: everything above goes through the serial lane.
+    /// Size-checked here, so the check covers the final envelope text,
+    /// not just a payload fragment. A missing engine answer throws
     /// `.bridgeFailed` outright instead of a fabricated failure envelope,
     /// so a dead bridge can never look like an engine verdict.
     internal static func rawCall(_ request: String) throws -> String {
-        try lane.sync {
+        try guardRequestSize(request)
+        return try lane.sync {
             var bytes = Array(request.utf8CString)
             guard let response = CGoInvoke(&bytes) else {
                 throw XrayError.bridgeFailed("the engine bridge returned no response: the engine may not be loaded")
@@ -69,13 +71,14 @@ internal final class EngineTransport {
         guard let text = String(data: data, encoding: .utf8) else {
             throw XrayError.bridgeFailed("payload could not be encoded as UTF-8 JSON")
         }
-        try guardRequestSize(text)
         return try rawCall("""
         {"apiVersion":\(protocolVersion),"method":"\(method.rawValue)","payload":\(text)}
         """)
     }
 
-    /// Parses a raw engine response into its envelope.
+    /// Parses a raw engine response into its envelope. The decode cause
+    /// is kept in the message: "unreadable" alone never says which key
+    /// broke shape.
     internal static func envelope<Payload: Decodable>(
         of response: String,
         as type: Payload.Type
@@ -83,7 +86,7 @@ internal final class EngineTransport {
         do {
             return try JSONDecoder().decode(Xray.EngineEnvelope<Payload>.self, from: Data(response.utf8))
         } catch {
-            throw XrayError.bridgeFailed("engine answered with an unreadable envelope")
+            throw XrayError.bridgeFailed("engine answered with an unreadable envelope: \(error.localizedDescription)")
         }
     }
 

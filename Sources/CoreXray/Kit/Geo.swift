@@ -39,10 +39,21 @@ public final class XrayGeoDownloader: @unchecked Sendable {
     }()
 
     /// Default source for the IP database.
-    public var geoIPURL: URL
+    /// Default source for the IP database. Lock-guarded: swapping
+    /// sources mid-download races the in-flight request, so treat both
+    /// URLs as set-once configuration.
+    public var geoIPURL: URL {
+        get { stateLock.withLock { _geoIPURL } }
+        set { stateLock.withLock { _geoIPURL = newValue } }
+    }
+    private var _geoIPURL: URL
 
     /// Default source for the site database.
-    public var geoSiteURL: URL
+    public var geoSiteURL: URL {
+        get { stateLock.withLock { _geoSiteURL } }
+        set { stateLock.withLock { _geoSiteURL = newValue } }
+    }
+    private var _geoSiteURL: URL
 
     /// Transport for downloads. `URLSession.shared` in production;
     /// tests swap in a stubbed configuration. Set once before the first
@@ -50,18 +61,18 @@ public final class XrayGeoDownloader: @unchecked Sendable {
     /// races the in-flight request, so treat it as set-once
     /// configuration.
     internal var urlSession: URLSession {
-        get { sessionLock.withLock { _urlSession } }
-        set { sessionLock.withLock { _urlSession = newValue } }
+        get { stateLock.withLock { _urlSession } }
+        set { stateLock.withLock { _urlSession = newValue } }
     }
     private var _urlSession: URLSession = .shared
-    private let sessionLock = NSLock()
+    private let stateLock = NSLock()
 
     internal init(
         geoIPURL: URL? = nil,
         geoSiteURL: URL? = nil
     ) {
-        self.geoIPURL = geoIPURL ?? Self.defaultGeoIPURL
-        self.geoSiteURL = geoSiteURL ?? Self.defaultGeoSiteURL
+        self._geoIPURL = geoIPURL ?? Self.defaultGeoIPURL
+        self._geoSiteURL = geoSiteURL ?? Self.defaultGeoSiteURL
     }
 
     /// Downloads both databases into `directory`, creating it as needed
@@ -306,10 +317,11 @@ public enum XrayGeoAssets: Sendable {
 
     /// Verifies every referenced database exists and parses near the
     /// engine. Both databases start with the same protobuf framing byte
-    /// (field 1, wiretype 2), which catches the realistic corruptions —
-    /// zero-byte leftovers, HTML error pages saved as `.dat`, swapped
-    /// files. Throws `XrayError.geoAssets` naming the database and every
-    /// directory that was searched.
+    /// (field 1, wiretype 2), which catches the realistic corruptions:
+    /// zero-byte leftovers and HTML error pages saved as `.dat`. It
+    /// cannot catch a swapped pair — both files share the framing byte,
+    /// so keep filenames straight. Throws `XrayError.geoAssets` naming
+    /// the database and every directory that was searched.
     static func check(referenced databases: [XrayGeoDatabase], env: XrayJSONObject?) throws {
         guard !databases.isEmpty else { return }
         let directories = candidateDirectories(env: env)

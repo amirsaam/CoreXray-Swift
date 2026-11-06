@@ -33,7 +33,7 @@ internal final class LifecycleCalls {
     }
 
     internal static func rawRequest(_ request: String) throws -> String {
-        try EngineTransport.guardRequestSize(request)
+        // Size-checked inside the transport, against the final text.
         let response = try EngineTransport.rawCall(request)
         _ = try EngineTransport.resolved(
             EngineTransport.envelope(of: response, as: Xray.EngineEnvelopeNoPayload.self)

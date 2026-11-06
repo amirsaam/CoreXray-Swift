@@ -117,9 +117,11 @@ extension Xray {
     /// starting with the Age armor header is decrypted with `ageSecret`,
     /// and any other text comes back unchanged. It does not parse links
     /// and does not base64-decode — the result (whatever it is) goes to
-    /// `XrayConfig(shareLinks:ageSecret:)`, which accepts a single link, many
-    /// newline-separated links, a base64 blob, or a
-    /// `{"outbounds":[...]}` JSON blob.
+    /// `XrayConfig(shareLinks:ageSecret:)`, which accepts a single link,
+    /// many newline-separated links, or a base64 blob of those. It does
+    /// not accept `{"outbounds":[...]}` JSON blobs: the engine's
+    /// converter drops those, so full documents go to
+    /// `Xray.shared.configuration(.json(...))` instead.
     public func decodeSubscription(_ text: String, ageSecret: String? = nil) throws -> String {
         try ConfigCalls.decodeText(text, ageSecret: ageSecret)
     }

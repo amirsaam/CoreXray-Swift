@@ -58,8 +58,10 @@ final class PingTests: XCTestCase {
         XCTAssertTrue(try session.isRunning())
     }
 
-    func testEmptyLinkListDecodesAsEmptyString() throws {
-        let list = try JSONDecoder().decode(Xray.LinkList.self, from: Data("{}".utf8))
-        XCTAssertEqual(list.text, "")
+    func testLinkListWithoutLinksThrows() throws {
+        let list = try JSONDecoder().decode(Xray.LinkList.self, from: Data(#"{"links":"vless://x"}"#.utf8))
+        XCTAssertEqual(list.links, "vless://x")
+        // A missing list is a broken answer, not an empty feed.
+        XCTAssertThrowsError(try JSONDecoder().decode(Xray.LinkList.self, from: Data("{}".utf8)))
     }
 }

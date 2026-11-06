@@ -14,11 +14,13 @@ internal final class PortCalls {
     private init() {}
 
     internal static func spare(count: Int, excluding: [Int]) throws -> [Int] {
+        // Strict: a missing list is a broken answer, not an empty one —
+        // an empty list would send `verify` into ten wasted rounds first.
         try EngineTransport.ask(
             .sparePorts,
             payload: Xray.PortRequest(count: count, excluding: excluding),
             as: Xray.PortList.self
-        ).ports ?? []
+        ).ports
     }
 
     internal static func verify(count: Int, excluding: [Int]) throws -> [Int] {
@@ -72,6 +74,6 @@ extension Xray {
     }
 
     internal struct PortList: Decodable {
-        let ports: [Int]?
+        let ports: [Int]
     }
 }

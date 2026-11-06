@@ -202,7 +202,7 @@ final class AssemblyTests: XCTestCase {
         let full = #"{"inbounds":[],"outbounds":[{"tag":"proxy0","protocol":"freedom"}]}"#
         XCTAssertThrowsError(try XrayAssembly(source: .outboundJson(full)).assemble()) { error in
             let message = (error as? XrayError)?.errorDescription ?? ""
-            XCTAssertTrue(message.contains("engine.configuration(.json(...))"), message)
+            XCTAssertTrue(message.contains("Xray.shared.configuration(.json(...))"), message)
         }
     }
 

@@ -753,7 +753,9 @@ Targets pair a server's compact Xray JSON (only its `outbounds` are read)
 with an optional outbound tag — nil lets the engine pick the outbound tagged
 `"proxy"`, else the first one. Answers come back in input order, each
 carrying `succeeded`, `latencyMilliseconds` (real measurement, in ms), and —
-on failure — `failureReason`.
+on failure — `failureReason`. If one entry of the engine's answer doesn't
+parse, that slot gets a synthesized failure result instead of failing the
+whole batch, so `results[i]` still answers `targets[i]`.
 
 Four rules throw `.invalidInput` before touching the engine: no targets, more
 than five targets per call (split larger pools into batches), a timeout of

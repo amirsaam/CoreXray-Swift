@@ -26,11 +26,13 @@ internal final class ConfigCalls {
     }
 
     internal static func links(from json: String) throws -> String {
+        // Strict: an answer without links is a broken answer, and an
+        // empty string back would look like "no routable outbounds".
         try EngineTransport.ask(
             .shareLinksFromConfig,
             payload: Xray.ConfigPayload(xrayJson: json),
             as: Xray.LinkList.self
-        ).text
+        ).links
     }
 
     internal static func check(json: String) throws {
@@ -71,8 +73,6 @@ extension Xray {
     }
 
     internal struct LinkList: Decodable {
-        let links: String?
-
-        var text: String { links ?? "" }
+        let links: String
     }
 }

@@ -46,6 +46,14 @@ public struct XrayPingResult: Decodable, Sendable {
     /// The engine's failure reason when `succeeded` is false.
     public let failureReason: String?
 
+    /// Synthesized locally when the engine's answer for one target of
+    /// a batch doesn't parse — the slot still answers its target.
+    internal init(succeeded: Bool, latencyMilliseconds: Int, failureReason: String?) {
+        self.succeeded = succeeded
+        self.latencyMilliseconds = latencyMilliseconds
+        self.failureReason = failureReason
+    }
+
     enum CodingKeys: String, CodingKey {
         case succeeded = "success"
         case latencyMilliseconds = "delay"
@@ -90,7 +98,9 @@ extension Xray {
     ///
     /// The engine measures in an isolated instance of its own, so it must be
     /// stopped first — measuring while running throws `.invalidInput`
-    /// instead of the engine's refusal. At most five targets per call.
+    /// instead of the engine's refusal. The stopped check happens at call
+    /// time: a start racing the call still fails at the engine, loudly.
+    /// At most five targets per call.
     public func ping(_ targets: [XrayPingTarget], options: XrayPingOptions? = nil) throws -> [XrayPingResult] {
         guard !targets.isEmpty else {
             throw XrayError.invalidInput("ping needs at least one target")
@@ -130,6 +140,11 @@ extension Xray {
     ) throws -> XrayPingOptions {
         guard timeoutSeconds > 0 else {
             throw XrayError.invalidInput("ping timeout must be greater than zero seconds")
+        }
+        guard let url = URL(string: testURL),
+              let scheme = url.scheme, scheme == "http" || scheme == "https",
+              url.host != nil else {
+            throw XrayError.invalidInput("ping testURL must be an absolute HTTP or HTTPS URL")
         }
         return XrayPingOptions(timeoutSeconds: timeoutSeconds, testURL: testURL)
     }

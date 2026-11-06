@@ -259,6 +259,7 @@ final class HardeningTests: XCTestCase {
 
     func testPreflightAcceptsProcessEnvDescriptor() throws {
         setenv("xray.tun.fd", "5", 1)
+        defer { unsetenv("xray.tun.fd") }
         let tun = try shared.tun(listen: "127.0.0.1")
         let config = try shared.newSession().build(
             .json(minimalJSON), options: shared.options(tun: tun)
@@ -268,5 +269,84 @@ final class HardeningTests: XCTestCase {
             problems.contains(where: { $0.contains("file descriptor") }),
             "process-env descriptor must satisfy preflight, got: \(problems)"
         )
+    }
+
+    // MARK: - Low-batch: strict answers, stream paths, ping validation
+
+    func testPingOptionsRejectsBadURL() {
+        XCTAssertThrowsError(try shared.pingOptions(testURL: "not a url"))
+        XCTAssertThrowsError(try shared.pingOptions(testURL: "ftp://example.com/x"))
+        XCTAssertNoThrow(try shared.pingOptions(testURL: "https://example.com/generate_204"))
+    }
+
+    func testRawPingAnswersKeepResultsKey() throws {
+        let raw = try JSONDecoder().decode(
+            Xray.RawPingAnswers.self,
+            from: Data(#"{"results":[{"success":true,"delay":42}]}"#.utf8)
+        )
+        XCTAssertEqual(raw.outcomes?.count, 1)
+        // The entry the strict decode accepts still parses the same way,
+        // so the element-wise fallback only diverges on broken entries.
+        let strict = try JSONDecoder().decode(
+            Xray.PingAnswers.self,
+            from: Data(#"{"results":[{"success":true,"delay":42}]}"#.utf8)
+        )
+        XCTAssertEqual(strict.outcomes?.first?.latencyMilliseconds, 42)
+        // A broken entry fails the strict decode — the synthesized
+        // failure result takes its slot instead of poisoning the batch.
+        XCTAssertThrowsError(
+            try JSONDecoder().decode(
+                XrayPingResult.self,
+                from: Data(#"{"success":false}"#.utf8)
+            )
+        )
+        let synthesized = XrayPingResult(
+            succeeded: false,
+            latencyMilliseconds: 0,
+            failureReason: "the engine answered with an undecodable measurement"
+        )
+        XCTAssertFalse(synthesized.succeeded)
+    }
+
+    func testStderrLogPathRecordsNothing() async throws {
+        let session = shared.newSession()
+        session.launchOverride = { _ in }
+        defer {
+            session.launchOverride = nil
+            try? session.stop()
+        }
+        // The deadline path honors `launchOverride`, so no engine runs
+        // and no file is touched — only the path adoption is exercised.
+        try await session.start(
+            .json(#"{"log":{"error":"stderr"},"inbounds":[],"outbounds":[]}"#),
+            deadline: .seconds(5)
+        )
+        XCTAssertThrowsError(try session.recentEngineLogs(.error)) { error in
+            guard case XrayError.invalidInput(let message) = error else {
+                return XCTFail("expected .invalidInput, got \(error)")
+            }
+            XCTAssertTrue(message.contains("no error log file recorded"), message)
+        }
+    }
+
+    func testFileLogPathIsRecordedOnLaunch() async throws {
+        let session = shared.newSession()
+        session.launchOverride = { _ in }
+        defer {
+            session.launchOverride = nil
+            try? session.stop()
+        }
+        try await session.start(
+            .json(#"{"log":{"error":"/tmp/does-not-exist-corexray.log"},"inbounds":[],"outbounds":[]}"#),
+            deadline: .seconds(5)
+        )
+        // A recorded-but-missing file fails at the read, proving the
+        // path survived `filePath` — unlike a stream name.
+        XCTAssertThrowsError(try session.recentEngineLogs(.error)) { error in
+            guard case XrayError.bridgeFailed(let message) = error else {
+                return XCTFail("expected .bridgeFailed, got \(error)")
+            }
+            XCTAssertTrue(message.contains("could not read engine log"), message)
+        }
     }
 }

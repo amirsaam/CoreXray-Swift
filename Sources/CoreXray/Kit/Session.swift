@@ -1002,10 +1002,10 @@ public final class XraySession: @unchecked Sendable {
     /// are adopted only on a successful launch, so this tails the
     /// current run — a failed launch keeps the previous run's tail. The
     /// engine only writes when the document points it at files, so a
-    /// stdout, `none`, or missing path throws `.invalidInput` naming the
-    /// fix. Reads at most the trailing 256 KiB, so a verbose access log
-    /// can't blow up the caller. The bridge exposes no log stream, so
-    /// this is file tailing — the only engine output there is.
+    /// `stdout`, `stderr`, `none`, or missing path throws `.invalidInput`
+    /// naming the fix. Reads at most the trailing 256 KiB, so a verbose
+    /// access log can't blow up the caller. The bridge exposes no log
+    /// stream, so this is file tailing — the only engine output there is.
     public func recentEngineLogs(_ kind: XrayEngineLogKind = .error, lines: Int = 100) throws -> [String] {
         let path: String? = stateLock.withLock {
             switch kind {
@@ -1050,7 +1050,10 @@ public final class XraySession: @unchecked Sendable {
     }
 
     private static func filePath(_ value: String?) -> String? {
-        guard let value, !value.isEmpty, value != "none", value != "stdout" else { return nil }
+        // `none`, `stdout`, and `stderr` are streams, not files: nothing
+        // to tail, so they record as missing and `recentEngineLogs`
+        // throws the "point at a file" guidance instead of a read error.
+        guard let value, !value.isEmpty, value != "none", value != "stdout", value != "stderr" else { return nil }
         return value
     }
 

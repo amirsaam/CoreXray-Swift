@@ -153,7 +153,7 @@ public struct XrayAssemblyDNSRelay: Sendable {
 /// document. Share links are converted through the engine; a single
 /// outbound object is wrapped as the outbounds as-is. A full
 /// configuration document is rejected — that already *is* a runnable
-/// document, so run it through `engine.configuration(.json(...))` or
+/// document, so run it through `Xray.shared.configuration(.json(...))` or
 /// hand it to a session instead of assembling around it.
 public enum XrayAssemblySource: Sendable {
     /// Proxy share links: one `vless://`, `trojan://`, `ss://`, or
@@ -307,7 +307,7 @@ public struct XrayAssembly {
         if fields["outbounds"] != nil || fields["inbounds"] != nil {
             throw XrayError.invalidInput(
                 "this looks like a full configuration document, not one outbound — "
-                    + "run it through engine.configuration(.json(...)) instead of the assembler"
+                    + "run it through Xray.shared.configuration(.json(...)) instead of the assembler"
             )
         }
         for field in ["tag", "protocol"] {
