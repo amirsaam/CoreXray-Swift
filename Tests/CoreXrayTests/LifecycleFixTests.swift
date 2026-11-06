@@ -218,11 +218,15 @@ final class LifecycleFixTests: XCTestCase {
 
     func testLateSuccessAfterStopDoesNotStamp() async throws {
         let session = Xray.shared.newSession()
-        session.launchOverride = { _ in Thread.sleep(forTimeInterval: 0.3) }
+        // Semaphore gate: the launch settles only when released, so the
+        // stop below always lands first no matter how slow the runner is.
+        let release = DispatchSemaphore(value: 0)
+        session.launchOverride = { _ in _ = release.wait(timeout: .now() + 30) }
         defer { session.launchOverride = nil }
         let task = Task { try await session.start(.json(minimalJSON), deadline: .seconds(10)) }
         try await Task.sleep(for: .milliseconds(50))
         try session.stop()
+        release.signal()
         try await task.value
         XCTAssertNil(session.connectedSince, "superseded launch must not stamp")
         XCTAssertFalse(try session.isRunning())
@@ -232,7 +236,10 @@ final class LifecycleFixTests: XCTestCase {
 
     func testDeadlineBoundsTheWait() async throws {
         let session = Xray.shared.newSession()
-        session.launchOverride = { _ in Thread.sleep(forTimeInterval: 5) }
+        // Semaphore gate: the timer cannot lose to the launch no matter
+        // how slow the runner is; it only has to fire within the backstop.
+        let release = DispatchSemaphore(value: 0)
+        session.launchOverride = { _ in _ = release.wait(timeout: .now() + 30) }
         defer { session.launchOverride = nil }
         let started = Date()
         do {
@@ -243,6 +250,7 @@ final class LifecycleFixTests: XCTestCase {
                 return XCTFail("wrong error: \(error)")
             }
         }
+        release.signal()
         XCTAssertLessThan(
             Date().timeIntervalSince(started), 2.0,
             "the deadline must bound the call, not join the orphan"
