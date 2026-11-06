@@ -275,11 +275,11 @@ final class AuditFixTests: XCTestCase {
 
     func testDeadlineExceededThrowsTimedOut() async throws {
         let session = Xray.shared.newSession()
-        session.launchOverride = { _ in
-            // Synchronous hang, well past the deadline below: the launch
-            // task is detached, so this parks only that task's thread.
-            Thread.sleep(forTimeInterval: 2)
-        }
+        // Semaphore gate, not a fixed sleep: the launch cannot win early
+        // no matter how slow the runner is; the timer only has to fire
+        // within the backstop.
+        let release = DispatchSemaphore(value: 0)
+        session.launchOverride = { _ in _ = release.wait(timeout: .now() + 30) }
         defer { session.launchOverride = nil }
         do {
             try await session.start(.json(minimalJSON), deadline: .milliseconds(50))
@@ -289,6 +289,7 @@ final class AuditFixTests: XCTestCase {
                 return XCTFail("wrong error: \(error)")
             }
         }
+        release.signal()
         XCTAssertNil(session.connectedSince)
         XCTAssertFalse(try session.isRunning())
     }

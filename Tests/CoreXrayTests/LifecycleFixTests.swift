@@ -44,7 +44,12 @@ final class LifecycleFixTests: XCTestCase {
 
     func testTimeoutCompensationStopsOrphan() async throws {
         let session = Xray.shared.newSession()
-        session.launchOverride = { _ in Thread.sleep(forTimeInterval: 0.3) }
+        // Gate the launch on a semaphore instead of a fixed sleep: the
+        // launch can never win the deadline race early, so a slow CI
+        // runner cannot flip this test — the 50ms timer only has to fire
+        // within the 30s backstop below.
+        let release = DispatchSemaphore(value: 0)
+        session.launchOverride = { _ in _ = release.wait(timeout: .now() + 30) }
         defer { session.launchOverride = nil }
         do {
             try await session.start(.json(minimalJSON), deadline: .milliseconds(50))
@@ -54,7 +59,9 @@ final class LifecycleFixTests: XCTestCase {
                 return XCTFail("wrong error: \(error)")
             }
         }
-        // The launch settles at 0.3s; the compensation must stop it then.
+        // Release the orphan: the parked compensation must settle it,
+        // then stop the idle engine.
+        release.signal()
         try await wait(for: {
             session.recentLogs().contains(where: { $0.contains("engine stopped") })
         }, "timed-out start left its orphan running")
@@ -66,7 +73,10 @@ final class LifecycleFixTests: XCTestCase {
 
     func testStaleTimeoutCannotKillFreshStart() async throws {
         let session = Xray.shared.newSession()
-        session.launchOverride = { _ in Thread.sleep(forTimeInterval: 0.4) }
+        // Same semaphore gate as above: the timer only has to fire
+        // within the 30s backstop, so CI load cannot flip the race.
+        let release = DispatchSemaphore(value: 0)
+        session.launchOverride = { _ in _ = release.wait(timeout: .now() + 30) }
         do {
             try await session.start(.json(minimalJSON), deadline: .milliseconds(50))
             XCTFail("expected .timedOut")
@@ -79,6 +89,9 @@ final class LifecycleFixTests: XCTestCase {
         // Fresh sync start on the real engine: bumps the epoch, so the
         // stale compensation above must stand down when the orphan settles.
         try session.start(rawJSON: minimalJSON)
+        // Release only after the fresh start: the orphan is guaranteed
+        // unsettled while the new instance comes up.
+        release.signal()
         try await Task.sleep(for: .seconds(1))
         XCTAssertTrue(try session.isRunning())
         XCTAssertNotNil(session.connectedSince)

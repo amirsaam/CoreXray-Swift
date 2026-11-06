@@ -462,7 +462,10 @@ final class HardeningTests: XCTestCase {
         // cleanup parks in the background. A second session starting
         // before the orphan settles must survive the orphan's arrival.
         let first = shared.newSession()
-        first.launchOverride = { _ in Thread.sleep(forTimeInterval: 0.4) }
+        // Semaphore gate, not a fixed sleep: the launch cannot win early
+        // no matter how slow the runner is.
+        let release = DispatchSemaphore(value: 0)
+        first.launchOverride = { _ in _ = release.wait(timeout: .now() + 30) }
         defer {
             first.launchOverride = nil
             try? Xray.shared.stop()
@@ -478,6 +481,9 @@ final class HardeningTests: XCTestCase {
         XCTAssertNil(first.connectedSince)
         let second = shared.newSession()
         try second.start(rawJSON: minimalJSON)
+        // The orphan is still unsettled here: releasing now proves the
+        // parked cleanup stands down against the newer instance.
+        release.signal()
         XCTAssertTrue(try shared.isRunning())
         try await Task.sleep(for: .seconds(1))
         XCTAssertTrue(
