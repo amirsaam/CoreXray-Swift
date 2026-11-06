@@ -51,18 +51,30 @@ public struct XrayConfig: Sendable {
     /// anything. The thrown `XrayError` carries the engine's parser
     /// complaint, which is the cheapest way to reject bad user input.
     /// The check runs inside the engine, so it needs the engine
-    /// stopped — while running, use `validateOffline()` instead.
+    /// stopped — while running, use `validateOffline()` instead. The
+    /// launch-time geo gate also runs first, so a document whose
+    /// `geosite:`/`geoip:` files are missing fails here the same way it
+    /// would fail at `start`, instead of validating green and then
+    /// refusing to launch.
     public func validate() throws {
+        if let data = json.data(using: .utf8),
+           let decoded = try? JSONDecoder().decode(XrayJSONValue.self, from: data),
+           case .object(let dict) = decoded {
+            try XrayGeoAssets.check(referenced: XrayGeoAssets.referenced(in: dict), env: dict["env"]?.objectValue)
+            try XrayGeoAssets.check(externalFiles: XrayGeoAssets.referencedExternalFiles(in: dict), env: dict["env"]?.objectValue)
+        }
         try ConfigCalls.check(json: json)
     }
 
     /// Checks the document's structure without touching the engine, so
     /// it works while the engine runs. Verifies the text parses to a
     /// JSON object with only known top-level sections, and that every
-    /// inbound and outbound carries the `tag` and `protocol` the engine
-    /// requires. This is shape, not semantics: unknown protocols,
-    /// unreachable addresses, and contradictory rules still need the
-    /// engine's own `validate()`.
+    /// inbound and outbound carries the non-empty `protocol` the engine
+    /// requires. `tag` is intentionally not required: untagged entries
+    /// launch fine (the engine invents an identity), and demanding one
+    /// would reject documents the engine accepts. This is shape, not
+    /// semantics: unknown protocols, unreachable addresses, and
+    /// contradictory rules still need the engine's own `validate()`.
     public func validateOffline() throws {
         let decoded: XrayJSONValue
         do {
@@ -76,16 +88,19 @@ public struct XrayConfig: Sendable {
         try Self.checkStructure(of: dict)
     }
 
-    /// The top-level sections the engine parses. Anything else is a
-    /// typo the engine would reject at launch.
+    /// The top-level sections the engine parses — pinned to the section
+    /// map in the bundled libXray's `infra/conf` loader, not to the
+    /// Xray-core HEAD the list may have grown in since. Anything else
+    /// is a typo the engine would reject at launch.
     private static let knownSections: Set<String> = [
         "log", "metrics", "stats", "observatory", "dns", "fakedns",
         "inbounds", "outbounds", "routing", "policy", "reverse",
         "transport", "api", "script", "env", "remarks",
     ]
 
-    /// Shape-checks a decoded document: known sections only, and every
-    /// inbound/outbound carries `tag` plus `protocol`.
+    /// Shape-checks a decoded document: known sections only, entry
+    /// arrays where the engine reads arrays, and a non-empty `protocol`
+    /// on every inbound/outbound entry.
     private static func checkStructure(of dict: XrayJSONObject) throws {
         for key in dict.keys where !knownSections.contains(key) {
             throw XrayError.invalidInput(
@@ -93,17 +108,18 @@ public struct XrayConfig: Sendable {
             )
         }
         for section in ["inbounds", "outbounds"] {
-            guard let entries = dict[section]?.arrayValue else { continue }
+            guard let raw = dict[section] else { continue }
+            guard let entries = raw.arrayValue else {
+                throw XrayError.invalidInput("the '\(section)' section must be an array: the engine reads no other shape, so a lone object would fail at launch, not just here")
+            }
             for (index, entry) in entries.enumerated() {
                 guard case .object(let fields) = entry else {
                     throw XrayError.invalidInput("the \(section) entry at index \(index) must be a JSON object")
                 }
-                for field in ["tag", "protocol"] {
-                    guard case .string(let value) = fields[field], !value.isEmpty else {
-                        throw XrayError.invalidInput(
-                            "the \(section) entry at index \(index) is missing its '\(field)'"
-                        )
-                    }
+                guard case .string(let value) = fields["protocol"], !value.isEmpty else {
+                    throw XrayError.invalidInput(
+                        "the \(section) entry at index \(index) is missing its 'protocol'"
+                    )
                 }
             }
         }

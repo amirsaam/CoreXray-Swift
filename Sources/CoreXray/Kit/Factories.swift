@@ -51,8 +51,8 @@ extension Xray {
     /// call: conversion/wrapping plus local inbounds and sections, no
     /// struct construction. A socks inbound on `socksPort` is included by default (matching the native
     /// apps); pass nil to leave it out, or a port for an HTTP inbound via
-    /// `httpPort`. Anything fancier — TUN, observatory, patches — still goes
-    /// through `assembler(_:)` or `XraySession().build`.
+    /// `httpPort`. Anything fancier — TUN, observatory, dnsRelay removal,
+    /// patches — still goes through `assembler(_:)`.
     public func proxyConfiguration(
         _ source: XrayAssemblySource,
         remarks: String? = nil,
@@ -60,7 +60,10 @@ extension Xray {
         httpPort: Int? = nil,
         routing: XrayRouting? = nil,
         dns: XrayDNS? = nil,
-        log: XrayLog? = nil
+        log: XrayLog? = nil,
+        credentials: XrayCredentials? = nil,
+        environment: [String: String]? = nil,
+        geoCheck: Bool = true
     ) throws -> XrayConfig {
         if let socksPort { try Self.validPort(socksPort, name: "socks") }
         if let httpPort { try Self.validPort(httpPort, name: "http") }
@@ -71,6 +74,9 @@ extension Xray {
         assembly.routing = routing
         assembly.dns = dns
         assembly.log = log
+        assembly.credentials = credentials
+        assembly.environment = environment
+        assembly.geoCheck = geoCheck
         return try assembly.assemble()
     }
 }

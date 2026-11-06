@@ -15,8 +15,11 @@ import Foundation
 /// let config = try assembly.assemble()
 /// ```
 public struct XrayMetrics: Sendable {
-    /// Section tag. The reference app reads per-tag counters by inbound
-    /// tag, so this only matters if you rename it deliberately.
+    /// Section tag. Cosmetic to the engine — counters are keyed by
+    /// inbound/outbound tag, not by this — it only labels the section
+    /// for readers of the JSON. `options(metricsPort:)` always wires
+    /// the default tag; a custom tag travels only when you place the
+    /// section yourself (raw JSON or a transform).
     public var tag: String
     /// Localhost port serving `/debug/vars`. Keep it out of the ports
     /// your entries listen on; `verifyAvailablePorts` finds a safe one.
@@ -68,6 +71,12 @@ public struct XrayTrafficCounter: Sendable {
 /// `XrayTrafficSnapshot.observatory`. Requires `metricsPort` to be set —
 /// probing without metrics has no readable results.
 ///
+/// The factory rejects an empty selector, a non-http(s) probe URL, and a
+/// malformed Go interval up front. What it cannot check is whether the
+/// selector matches anything: a selector no outbound tag starts with
+/// probes nothing and reports nothing — silently. After launch, confirm
+/// your tags appear in the snapshot before trusting an empty delay map.
+///
 /// ```swift
 /// Xray.shared.options(
 ///     metricsPort: 10085,
@@ -77,13 +86,18 @@ public struct XrayTrafficCounter: Sendable {
 public struct XrayObservatory: Sendable {
     /// Tag prefixes to probe. A list ends up as plain prefix matching:
     /// `"fast"` matches `"fast-v1"` and `"fastest"`; the empty string
-    /// matches every outbound.
+    /// matches every outbound — including `direct` and `block` if their
+    /// tags start the same way, so scope selectors to proxy tags.
     public var subjectSelector: [String]
 
-    /// The URL the probe requests.
+    /// The URL the probe requests. Probed through every selected outbound
+    /// on every interval, so a heavy page here is per-outbound traffic —
+    /// keep it a light endpoint that answers 204.
     public var probeURL: String
 
     /// How often to probe. Go duration syntax: `"30s"`, `"1m"`, `"2h"`.
+    /// Shorter intervals refresh delays faster and burn more data across
+    /// every selected outbound; `"0s"` disables probing at the engine.
     public var probeInterval: String
 
     /// Whether all selected outbounds are probed at once instead of
@@ -165,15 +179,15 @@ public struct XrayTrafficSnapshot: Sendable {
         self.observatory = observatory
     }
 
-    /// Byte counters are cumulative and unbounded, so every sum wraps
-    /// instead of trapping: months of uptime must not crash the
-    /// dashboard when the counters exceed `Int64.max`.
+    /// Byte counters are cumulative and saturating: sums clamp at
+    /// `Int64.max` instead of wrapping, so months of uptime must not
+    /// turn totals negative and read as a restart to the watchdog.
     public var totalUp: Int64 {
-        inbound.values.reduce(0) { $0 &+ $1.up } &+ outbound.values.reduce(0) { $0 &+ $1.up }
+        saturatingSum(inbound.values.map(\.up) + outbound.values.map(\.up))
     }
 
     public var totalDown: Int64 {
-        inbound.values.reduce(0) { $0 &+ $1.down } &+ outbound.values.reduce(0) { $0 &+ $1.down }
+        saturatingSum(inbound.values.map(\.down) + outbound.values.map(\.down))
     }
 
     /// Uplink/downlink counted on the outbound side only. The engine
@@ -183,12 +197,12 @@ public struct XrayTrafficSnapshot: Sendable {
     /// speeds want this side: for proxy mode it equals the bytes the
     /// device exchanged with the network.
     public var uplink: Int64 {
-        outbound.values.reduce(0) { $0 &+ $1.up }
+        saturatingSum(outbound.values.map(\.up))
     }
 
     /// Outbound-side downlink; see `uplink`.
     public var downlink: Int64 {
-        outbound.values.reduce(0) { $0 &+ $1.down }
+        saturatingSum(outbound.values.map(\.down))
     }
 
     /// Bytes moved between two snapshots, with per-second rates derived
@@ -209,8 +223,8 @@ public struct XrayTrafficSnapshot: Sendable {
         }
         let inboundDelta = diffed(inbound, earlier.inbound)
         let outboundDelta = diffed(outbound, earlier.outbound)
-        let up = inboundDelta.values.reduce(0) { $0 &+ $1.up } &+ outboundDelta.values.reduce(0) { $0 &+ $1.up }
-        let down = inboundDelta.values.reduce(0) { $0 &+ $1.down } &+ outboundDelta.values.reduce(0) { $0 &+ $1.down }
+        let up = saturatingSum(inboundDelta.values.map(\.up) + outboundDelta.values.map(\.up))
+        let down = saturatingSum(inboundDelta.values.map(\.down) + outboundDelta.values.map(\.down))
         return XrayTrafficDelta(
             seconds: seconds,
             inbound: inboundDelta,
@@ -235,12 +249,12 @@ public struct XrayTrafficDelta: Sendable {
 
     /// Outbound-side bytes up over the interval; see `XrayTrafficSnapshot.uplink`.
     public var uplink: Int64 {
-        outbound.values.reduce(0) { $0 &+ $1.up }
+        saturatingSum(outbound.values.map(\.up))
     }
 
     /// Outbound-side bytes down over the interval.
     public var downlink: Int64 {
-        outbound.values.reduce(0) { $0 &+ $1.down }
+        saturatingSum(outbound.values.map(\.down))
     }
 
     public var upPerSecond: Double {
@@ -293,6 +307,10 @@ public struct XrayTrafficMonitor: Sendable {
         guard (1 ... 65_535).contains(port) else {
             throw XrayError.invalidInput("metrics port \(port) is outside 1...65535")
         }
+        // Stamp before the request: `delta` divides by the gap between
+        // stamps, and stamping after the read would silently drop the
+        // request latency from sub-second polls.
+        let taken = Date()
         // Reject host:port shapes before bracketing confuses them with
         // an IPv6 literal: the port belongs in `port`, not in `host`.
         let parts = host.split(separator: ":", omittingEmptySubsequences: false)
@@ -323,15 +341,20 @@ public struct XrayTrafficMonitor: Sendable {
             let code = (response as? HTTPURLResponse)?.statusCode ?? -1
             throw XrayError.bridgeFailed("metrics endpoint returned HTTP \(code)")
         }
-        return try Self.decodeSnapshot(from: data)
+        return try Self.decodeSnapshot(from: data, taken: taken)
     }
 
     /// Parses one `/debug/vars` body. Separate from `snapshot` so the
-    /// shape is unit-testable without a running engine.
-    static func decodeSnapshot(from data: Data) throws -> XrayTrafficSnapshot {
+    /// shape is unit-testable without a running engine. The stamp is a
+    /// parameter (defaulting to now) so callers control it — but two
+    /// snapshots stamped in the same instant still diff to a zero
+    /// interval and silent zero rates, so sub-second polling needs the
+    /// real stamps `snapshot()` takes.
+    static func decodeSnapshot(from data: Data, taken: Date = Date()) throws -> XrayTrafficSnapshot {
         do {
             let payload = try JSONDecoder().decode(VarsPayload.self, from: data)
             return XrayTrafficSnapshot(
+                taken: taken,
                 inbound: payload.stats?.inbound?.mapValues { $0.counter } ?? [:],
                 outbound: payload.stats?.outbound?.mapValues { $0.counter } ?? [:],
                 observatory: payload.observatory?.compactMapValues { $0.probe } ?? [:]
@@ -368,16 +391,20 @@ public final class XrayTrafficWatchdog: @unchecked Sendable {
         host: String,
         interval: Duration,
         stalledAfter: Duration,
+        timeoutSeconds: Double = 5,
         onStall: @escaping @Sendable () -> Void
     ) throws {
         guard (1 ... 65_535).contains(port) else {
             throw XrayError.invalidInput("metrics port \(port) is outside 1...65535")
         }
-        guard interval > .zero else {
-            throw XrayError.invalidInput("traffic watchdog interval must be positive")
+        guard interval >= .milliseconds(10) else {
+            throw XrayError.invalidInput("traffic watchdog interval must be at least 10ms: sub-millisecond polling is socket churn that starves the poll loop it measures")
         }
-        guard stalledAfter > .zero else {
-            throw XrayError.invalidInput("traffic watchdog stalledAfter must be positive")
+        guard stalledAfter >= interval else {
+            throw XrayError.invalidInput("traffic watchdog stalledAfter (\(stalledAfter)) must be at least the poll interval (\(interval)): anything shorter fires on the first late poll, not on a stall")
+        }
+        guard timeoutSeconds > 0 else {
+            throw XrayError.invalidInput("traffic watchdog timeoutSeconds must be positive")
         }
         guard !host.isEmpty else {
             throw XrayError.invalidInput("traffic watchdog host must not be empty")
@@ -389,7 +416,7 @@ public final class XrayTrafficWatchdog: @unchecked Sendable {
             (!host.hasPrefix("[") && host.contains(":") && parts.count == 2 && parts.last?.allSatisfy(\.isNumber) == true) {
             throw XrayError.invalidInput("traffic watchdog host \(host) includes a port: pass the bare host and put the port in `port`")
         }
-        self.monitor = XrayTrafficMonitor(port: port, host: host)
+        self.monitor = XrayTrafficMonitor(port: port, host: host, timeoutSeconds: timeoutSeconds)
         self.interval = interval
         self.stalledAfter = stalledAfter
         self.onStall = onStall
@@ -442,7 +469,8 @@ public final class XrayTrafficWatchdog: @unchecked Sendable {
                     // Any movement counts: growth is traffic, a drop is an
                     // engine restart resetting its counters — fresh traffic,
                     // not a stall. Only exactly-equal totals mean silence.
-                    if now.totalUp &+ now.totalDown != previous.totalUp &+ previous.totalDown {
+                    // Saturating sides only: totals wrap nothing anymore.
+                    if now.uplink != previous.uplink || now.downlink != previous.downlink {
                         lastAdvance = ContinuousClock.now
                         fired = false
                     }
@@ -467,15 +495,28 @@ extension Xray {
 
     /// Starts a stall watchdog over the metrics endpoint on `port`: same
     /// listener `trafficMonitor` reads, so the port must be assembled in
-    /// (see `metricsPort`).
+    /// (see `metricsPort`). Slow endpoints get their own budget instead
+    /// of the 5s monitor default.
     public func trafficWatchdog(
         port: Int,
         host: String = "127.0.0.1",
         interval: Duration = .seconds(10),
         stalledAfter: Duration = .seconds(60),
+        timeoutSeconds: Double = 5,
         onStall: @escaping @Sendable () -> Void
     ) throws -> XrayTrafficWatchdog {
-        try XrayTrafficWatchdog(port: port, host: host, interval: interval, stalledAfter: stalledAfter, onStall: onStall)
+        try XrayTrafficWatchdog(port: port, host: host, interval: interval, stalledAfter: stalledAfter, timeoutSeconds: timeoutSeconds, onStall: onStall)
+    }
+}
+
+// Saturating sum of counters: clamps at `Int64.max` instead of
+// wrapping. A wrapped total turns negative, which the watchdog reads
+// as a restart (fresh traffic) and a dashboard reads as a drop —
+// saturation keeps the series monotonic so both stay truthful.
+private func saturatingSum(_ values: [Int64]) -> Int64 {
+    values.reduce(0) { total, next in
+        let (sum, overflow) = total.addingReportingOverflow(next)
+        return overflow ? .max : sum
     }
 }
 
@@ -555,6 +596,10 @@ private struct VarsProbe: Decodable {
 // checked here; snapshots and deltas are read-models from the engine and
 // need no factories.
 extension Xray {
+    /// Builds a metrics section by hand — for raw documents and
+    /// transforms. The tag labels the section only (the engine keys
+    /// counters by inbound/outbound tag); the normal path is
+    /// `options(metricsPort:)`, which always wires the default tag.
     public func metrics(tag: String = "XrayMetrics", port: Int) throws -> XrayMetrics {
         try Self.validPort(port, name: "metrics")
         return XrayMetrics(tag: tag, port: port)

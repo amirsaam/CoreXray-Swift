@@ -21,6 +21,15 @@ public enum XrayGeoDatabase: String, Sendable {
 /// Configure the URLs before the first download, then treat the instance
 /// as read-only: concurrent downloads are safe, concurrent
 /// reconfiguration is not.
+///
+/// URLs may be `https` (production) or `file` (tests and offline packs) —
+/// anything `URLSession` downloads. Redirects are followed by the
+/// transport (the default Loyalsoldier "latest/download" links are
+/// redirects); authentication is not: a source behind auth needs a URL
+/// whose response is already authorized (signed link), because no
+/// headers or delegates are attached. Downloads trust the transport's
+/// TLS — a compromised source ships a compromised database, and the
+/// gate only checks shape, not signature, so pin sources you trust.
 public final class XrayGeoDownloader: @unchecked Sendable {
     /// Default source for the IP database.
     public static let defaultGeoIPURL: URL = {
@@ -65,6 +74,10 @@ public final class XrayGeoDownloader: @unchecked Sendable {
     }
     private var _urlSession: URLSession = .shared
     private let stateLock = NSLock()
+    /// Serializes the stage-then-replace window across concurrent
+    /// fetches of the same file, so two upgrades can never interleave
+    /// a remove between the other's stage and move.
+    private static let replaceLock = NSLock()
 
     internal init(
         geoIPURL: URL? = nil,
@@ -75,16 +88,22 @@ public final class XrayGeoDownloader: @unchecked Sendable {
     }
 
     /// Downloads both databases into `directory`, creating it as needed
-    /// and replacing same-named files. Progress runs 0.0 to 1.0 across
-    /// both files; `onProgress` is called on the main actor and is
-    /// optional.
+    /// and replacing same-named files — atomically: each file downloads
+    /// to a `.part` sibling and moves into place only after the bytes
+    /// land, so a kill between downloads never destroys the file that
+    /// was already good. Progress runs 0.0 to 1.0 across both files;
+    /// `onProgress` is called on the main actor and is optional.
     public func download(
         into directory: URL,
         geoIPURL: URL? = nil,
         geoSiteURL: URL? = nil,
         onProgress: ((Double) -> Void)? = nil
     ) async throws {
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        } catch {
+            throw XrayError.bridgeFailed("could not create the geo directory \(directory.path): \(error.localizedDescription)")
+        }
         let ipSource = geoIPURL ?? self.geoIPURL
         let siteSource = geoSiteURL ?? self.geoSiteURL
         let tracker = ProgressTracker(report: onProgress)
@@ -114,7 +133,11 @@ public final class XrayGeoDownloader: @unchecked Sendable {
         geoIPURL: URL? = nil,
         geoSiteURL: URL? = nil
     ) async throws {
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        } catch {
+            throw XrayError.bridgeFailed("could not create the geo directory \(directory.path): \(error.localizedDescription)")
+        }
         var wanted: Set<XrayGeoDatabase> = []
         for database in databases {
             let path = directory.appendingPathComponent("\(database.rawValue).dat").path
@@ -147,8 +170,12 @@ public final class XrayGeoDownloader: @unchecked Sendable {
         to destination: URL,
         progress: @Sendable @escaping (Double) -> Void
     ) async throws {
-        // Best-effort cleanup of a previous partial download; failure just means there was nothing there.
-        try? FileManager.default.removeItem(at: destination)
+        // Atomic by construction: the previous good file stays in place
+        // until the new bytes fully land in the `.part` sibling. A kill
+        // mid-download leaves the old database (or nothing at all),
+        // never a truncated one the gate would then refuse.
+        let staging = destination.appendingPathExtension("part")
+        try? FileManager.default.removeItem(at: staging)
         let current = DownloadTaskBox()
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
@@ -174,7 +201,15 @@ public final class XrayGeoDownloader: @unchecked Sendable {
                         return
                     }
                     do {
-                        try FileManager.default.moveItem(at: tempURL, to: destination)
+                        try FileManager.default.moveItem(at: tempURL, to: staging)
+                        // The old file is removed only after the new one is
+                        // staged — and under the lock, so a concurrent
+                        // fetch of the same file never interleaves a
+                        // remove between another's stage and move.
+                        try Self.replaceLock.withLock {
+                            try? FileManager.default.removeItem(at: destination)
+                            try FileManager.default.moveItem(at: staging, to: destination)
+                        }
                         continuation.resume()
                     } catch {
                         continuation.resume(throwing: error)
@@ -287,7 +322,9 @@ public enum XrayGeoAssets: Sendable {
     /// final colon. A value with no second colon is a bare filename. An
     /// empty filename (`"ext::tag"`) is kept as `""` rather than dropped,
     /// so the gate rejects it with a naming-the-typo error instead of
-    /// passing a document the engine will fail on.
+    /// passing a document the engine will fail on. Filenames with
+    /// several colons split at the last one — the engine's prefix/file
+    /// split assumes the same shape, so avoid colons in `ext:` filenames.
     static func externalFile(named text: String) -> String? {
         guard text.hasPrefix("ext:") else { return nil }
         let rest = String(text.dropFirst(4))
@@ -393,13 +430,42 @@ public enum XrayGeoAssets: Sendable {
         }
     }
 
-    /// A database counts as readable when it exists, is non-empty, and
-    /// its first byte is valid protobuf framing.
+    /// A database counts as readable when it exists and opens with a
+    /// well-formed protobuf first field: tag `0x0A` (field 1,
+    /// wiretype 2), then a varint length the file actually holds.
+    /// Catching the length matters: a newline-prefixed text file
+    /// (`0x0A` plus ASCII) passes a first-byte check and then fails at
+    /// traffic time, and a truncated download passes it too. Both files
+    /// share the framing, so this still cannot catch a swapped pair —
+    /// keep filenames straight.
     static func verify(at path: String) -> Bool {
         guard let file = FileHandle(forReadingAtPath: path) else { return false }
         defer { try? file.close() }
-        let header = file.readData(ofLength: 1)
-        return header.first == 0x0A
+        let header = file.readData(ofLength: 12)
+        guard header.count >= 2, header[header.startIndex] == 0x0A else { return false }
+        // Parse the varint length after the tag: up to 10 bytes, stop at
+        // the first byte without the continuation bit.
+        var length = 0
+        var shift = 0
+        var index = header.startIndex + 1
+        var lengthBytes = 0
+        while index < header.endIndex, lengthBytes < 10 {
+            let byte = header[index]
+            length |= Int(byte & 0x7F) << shift
+            shift += 7
+            lengthBytes += 1
+            index += 1
+            if byte & 0x80 == 0 {
+                guard length > 0 else { return false }
+                let rest = header.count - (index - header.startIndex)
+                if rest >= length { return true }
+                // Header too short to hold the first field: fall back to
+                // the file size — a real database dwarfs its first field.
+                guard let size = try? file.seekToEnd(), size >= UInt64(1 + lengthBytes + length) else { return false }
+                return true
+            }
+        }
+        return false
     }
 }
 

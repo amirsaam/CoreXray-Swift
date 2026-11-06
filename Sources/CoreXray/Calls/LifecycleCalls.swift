@@ -8,11 +8,11 @@ internal final class LifecycleCalls {
     /// Never instantiated: all members are static.
     private init() {}
 
-    private struct EngineVersion: Decodable {
+    private struct EngineVersion: Decodable, Sendable {
         let version: String
     }
 
-    private struct EngineState: Decodable {
+    private struct EngineState: Decodable, Sendable {
         let running: Bool
     }
 

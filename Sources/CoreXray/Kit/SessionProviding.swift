@@ -50,6 +50,25 @@ extension XraySessionProviding {
         try await start(source, options: nil)
     }
 
+    public func start(_ source: XrayConfigSource, deadline: Duration) async throws {
+        try await start(source, options: nil, deadline: deadline)
+    }
+
+    public func start(remoteSubscription url: URL) async throws {
+        try await start(
+            remoteSubscription: url,
+            ageSecret: nil,
+            assetDirectory: nil,
+            options: nil,
+            deadline: .seconds(30),
+            timeoutSeconds: 30
+        )
+    }
+
+    public func recentEngineLogs() throws -> [String] {
+        try recentEngineLogs(.error, lines: 100)
+    }
+
     public func validate(_ source: XrayConfigSource) throws {
         try validate(source, options: nil)
     }

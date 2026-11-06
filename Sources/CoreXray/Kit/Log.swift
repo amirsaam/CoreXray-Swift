@@ -16,6 +16,12 @@ public enum XrayLogLevel: String, Sendable {
 /// ```swift
 /// Xray.shared.log(level: .warning, dnsLog: true)
 /// ```
+///
+/// Log paths are the session's forensics: point them at files and
+/// `recentEngineLogs(kind:lines:)` tails them in place. The engine
+/// appends without rotating — in a long-lived provider, point the paths
+/// at the shared container and rotate them from the app side (size-cap
+/// and rename on launch), or the files grow without bound.
 public struct XrayLog: Sendable {
 
     public var level: XrayLogLevel?

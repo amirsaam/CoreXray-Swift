@@ -152,8 +152,12 @@ public struct XrayTunEntry: Sendable {
     }
 }
 
-// Value factory for the TUN entry. A negative file descriptor is rejected
-// here instead of failing obscurely inside the engine.
+// Value factory for the TUN entry. A negative file descriptor, a
+// non-positive MTU, or an explicitly empty interface name is rejected
+// here instead of failing obscurely inside the engine. Stderr and fd 0
+// are the caller's responsibility to avoid: fd 0 is standard input, and
+// a TUN entry inheriting it would hand the packet reader a pipe that is
+// not a tunnel.
 extension Xray {
     public func tun(
         tag: String = "tunIn",
@@ -170,6 +174,12 @@ extension Xray {
     ) throws -> XrayTunEntry {
         if let fileDescriptor, fileDescriptor < 0 {
             throw XrayError.invalidInput("tun fileDescriptor must be non-negative, got \(fileDescriptor)")
+        }
+        if mtu <= 0 {
+            throw XrayError.invalidInput("tun mtu must be positive, got \(mtu)")
+        }
+        if let autoOutboundsInterface, autoOutboundsInterface.isEmpty {
+            throw XrayError.invalidInput("tun autoOutboundsInterface must be non-empty when set: \"\" means nothing to the engine, so leave it nil")
         }
         return XrayTunEntry(
             tag: tag, listen: listen, name: name, mtu: mtu, gateway: gateway,

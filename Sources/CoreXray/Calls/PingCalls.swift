@@ -57,15 +57,29 @@ internal final class PingCalls {
         }
         let encoder = JSONEncoder()
         let decoder = JSONDecoder()
-        return try rawOutcomes.map { element in
-            let data = try encoder.encode(element)
+        return rawOutcomes.map { element in
+            let data: Data
+            do {
+                data = try encoder.encode(element)
+            } catch {
+                // `XrayJSONValue` encodes by construction — a failure here
+                // names our side, not the engine's.
+                return XrayPingResult(
+                    succeeded: false,
+                    latencyMilliseconds: 0,
+                    failureReason: "client could not re-encode the engine's measurement: \(error.localizedDescription)"
+                )
+            }
             if let result = try? decoder.decode(XrayPingResult.self, from: data) {
                 return result
             }
+            // Client-side fallback marker: synthesized locally, so the
+            // prefix keeps it distinguishable from a failure the engine
+            // itself measured and reported.
             return XrayPingResult(
                 succeeded: false,
                 latencyMilliseconds: 0,
-                failureReason: "the engine answered with an undecodable measurement"
+                failureReason: "client fallback — the engine answered with an undecodable measurement"
             )
         }
     }

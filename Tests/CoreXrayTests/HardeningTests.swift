@@ -116,7 +116,7 @@ final class HardeningTests: XCTestCase {
 
     // MARK: - Overflow-safe telemetry
 
-    func testCounterSumsWrapInsteadOfTrapping() {
+    func testCounterSumsSaturateInsteadOfTrapping() {
         let snapshot = XrayTrafficSnapshot(
             inbound: [
                 "a": XrayTrafficCounter(up: .max, down: 0),
@@ -124,7 +124,9 @@ final class HardeningTests: XCTestCase {
             ],
             outbound: ["c": XrayTrafficCounter(up: .max, down: .max)]
         )
-        XCTAssertEqual(snapshot.totalUp, Int64.max &+ 1 &+ Int64.max)
+        // Saturating, not wrapping or trapping: dashboard math never
+        // reads a wrapped-around total as a restart, and never traps.
+        XCTAssertEqual(snapshot.totalUp, Int64.max)
         XCTAssertEqual(snapshot.totalDown, Int64.max)
         XCTAssertEqual(snapshot.uplink, Int64.max)
     }
@@ -442,5 +444,211 @@ final class HardeningTests: XCTestCase {
         XCTAssertEqual(snapshot.inbound["good"]?.up, 10)
         XCTAssertEqual(snapshot.outbound["broken"]?.up, 0)
         XCTAssertEqual(snapshot.outbound["broken"]?.down, 5)
+    }
+
+    // MARK: - Re-audit fixes: cross-session epochs
+
+    func testStaleTimeoutCleanupStandsDownForNewerStart() async throws {
+        // The first session's launch hangs past its deadline, so its
+        // cleanup parks in the background. A second session starting
+        // before the orphan settles must survive the orphan's arrival.
+        let first = shared.newSession()
+        first.launchOverride = { _ in Thread.sleep(forTimeInterval: 0.4) }
+        defer {
+            first.launchOverride = nil
+            try? Xray.shared.stop()
+        }
+        do {
+            try await first.start(.json(minimalJSON), deadline: .milliseconds(50))
+            XCTFail("expected a timeout")
+        } catch let error as XrayError {
+            guard case .timedOut = error else {
+                return XCTFail("expected .timedOut, got \(error)")
+            }
+        }
+        XCTAssertNil(first.connectedSince)
+        let second = shared.newSession()
+        try second.start(rawJSON: minimalJSON)
+        XCTAssertTrue(try shared.isRunning())
+        try await Task.sleep(for: .seconds(1))
+        XCTAssertTrue(
+            try shared.isRunning(),
+            "the stale timeout cleanup killed the newer instance"
+        )
+        XCTAssertNotNil(second.connectedSince)
+    }
+
+    func testDeadlineStartCancellationIsPrompt() async throws {
+        let session = shared.newSession()
+        session.launchOverride = { _ in Thread.sleep(forTimeInterval: 5) }
+        defer { session.launchOverride = nil }
+        let task = Task {
+            try await session.start(.json(minimalJSON), deadline: .seconds(30))
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        task.cancel()
+        let waited = Date()
+        do {
+            try await task.value
+            XCTFail("expected cancellation")
+        } catch is CancellationError {
+            XCTAssertLessThan(Date().timeIntervalSince(waited), 5)
+        } catch {
+            XCTFail("expected CancellationError, got \(error)")
+        }
+        XCTAssertNil(session.connectedSince)
+        XCTAssertFalse(try shared.isRunning())
+    }
+
+    // MARK: - Re-audit fixes: credentials, relay, preflight, routing
+
+    func testTransformAddedSocksWithoutCredentialsThrows() {
+        var assembly = shared.assembler(
+            .outboundJson(#"{"protocol":"freedom","tag":"proxy"}"#)
+        )
+        assembly.credentials = shared.credentials(username: "u", password: "p")
+        assembly.patch = { dict in
+            var inbounds = dict["inbounds"]?.arrayValue ?? []
+            // A transform-added SOCKS inbound carrying its own guard:
+            // applying the assembly credentials over it must throw
+            // instead of silently replacing someone else's auth.
+            inbounds.append(.object([
+                "tag": .string("evil"), "protocol": .string("socks"),
+                "listen": .string("127.0.0.1"), "port": .int(1099),
+                "settings": .object(["auth": .string("password")]),
+            ]))
+            dict["inbounds"] = .array(inbounds)
+        }
+        XCTAssertThrowsError(try assembly.assemble()) { error in
+            guard case XrayError.invalidInput(let message) = error else {
+                return XCTFail("expected .invalidInput, got \(error)")
+            }
+            XCTAssertTrue(message.contains("auth"), "got: \(message)")
+        }
+    }
+
+    func testCredentialsWithNoSocksInboundThrows() {
+        var assembly = shared.assembler(
+            .outboundJson(#"{"protocol":"freedom","tag":"proxy"}"#)
+        )
+        assembly.socks = nil
+        assembly.credentials = shared.credentials(username: "u", password: "p")
+        XCTAssertThrowsError(try assembly.assemble()) { error in
+            guard case XrayError.invalidInput(let message) = error else {
+                return XCTFail("expected .invalidInput, got \(error)")
+            }
+            XCTAssertTrue(message.contains("SOCKS inbound"), "got: \(message)")
+        }
+    }
+
+    func testAssemblyWithoutDNSSectionStillRoutesRelay() throws {
+        // The default assembly carries a dnsRelay but no dns section:
+        // the relay route and its `dns-out` must still be backfilled.
+        let config = try shared.proxyConfiguration(
+            .outboundJson(#"{"protocol":"freedom","tag":"proxy"}"#)
+        )
+        let document = try decoded(config.json)
+        guard case .object(let dict) = document,
+              case .array(let outbounds) = dict["outbounds"] else {
+            return XCTFail("assembled document has no outbounds")
+        }
+        XCTAssertTrue(
+            outbounds.contains {
+                $0.objectValue?["tag"]?.stringValue == "dns-out"
+            },
+            "dns-out was not backfilled"
+        )
+        guard case .object(let routing) = dict["routing"],
+              case .array(let rules) = routing["rules"] else {
+            return XCTFail("assembled document has no routing rules")
+        }
+        XCTAssertTrue(
+            rules.contains {
+                guard let rule = $0.objectValue else { return false }
+                return rule["outboundTag"]?.stringValue == "dns-out"
+                    && rule["inboundTag"]?.arrayValue?.compactMap({ $0.stringValue }).contains("dns-in") == true
+            },
+            "dns-in -> dns-out route missing"
+        )
+    }
+
+    func testPreflightFlagsNativeMetricsCollision() throws {
+        let json = """
+        {"inbounds":[{"tag":"socks-in","protocol":"socks","listen":"127.0.0.1","port":1080}],"outbounds":[{"tag":"direct","protocol":"freedom"}],"metrics":{"listen":"127.0.0.1:1080"}}
+        """
+        let problems = try shared.newSession().preflightIssues(.json(json))
+        XCTAssertTrue(
+            problems.contains { $0.contains("metrics listener") && $0.contains("1080") },
+            "got: \(problems)"
+        )
+    }
+
+    func testPreflightFlagsDuplicateInboundPorts() throws {
+        let json = """
+        {"inbounds":[{"tag":"a","protocol":"socks","listen":"127.0.0.1","port":1080},{"tag":"b","protocol":"http","listen":"127.0.0.1","port":1080}],"outbounds":[{"tag":"direct","protocol":"freedom"}]}
+        """
+        let problems = try shared.newSession().preflightIssues(.json(json))
+        XCTAssertTrue(
+            problems.contains { $0.contains("both listen on") },
+            "got: \(problems)"
+        )
+    }
+
+    func testBuildRejectsEmptyRoutingFields() {
+        for rule in [
+            shared.routingRule(domains: ["example.com"], port: ""),
+            shared.routingRule(domains: ["example.com"], network: " "),
+            shared.routingRule(domains: ["example.com"], protocols: [""]),
+        ] {
+            let options = shared.options(routing: shared.routing(rules: [rule]))
+            XCTAssertThrowsError(
+                try shared.newSession().build(.json(minimalJSON), options: options)
+            ) { error in
+                guard case XrayError.invalidInput = error else {
+                    return XCTFail("expected .invalidInput, got \(error)")
+                }
+            }
+        }
+    }
+
+    func testCustomTagWarningDoesNotThrow() throws {
+        var lines: [String] = []
+        let session = Xray.shared.newSession { lines.append($0) }
+        let options = shared.options(
+            routing: shared.routing(rules: [
+                shared.routingRule(domains: ["example.com"], destination: .custom("typo"))
+            ])
+        )
+        // Unknown to the document, so it warns — but the transform may
+        // still add it, so it must not throw at build.
+        XCTAssertNoThrow(try session.build(.json(minimalJSON), options: options))
+        XCTAssertTrue(lines.contains { $0.contains("typo") }, "got: \(lines)")
+    }
+
+    func testDuplicateMatchAllAboveFinalWarns() throws {
+        var lines: [String] = []
+        let session = Xray.shared.newSession { lines.append($0) }
+        let options = shared.options(
+            routing: shared.routing(
+                rules: [
+                    shared.routingRule(network: "tcp,udp", destination: .proxy),
+                    shared.routingRule(network: "tcp,udp", destination: .proxy),
+                ],
+                final: .direct
+            )
+        )
+        XCTAssertNoThrow(try session.build(.json(minimalJSON), options: options))
+        XCTAssertTrue(lines.contains { $0.contains("never fires") }, "got: \(lines)")
+    }
+
+    func testValidateOfflineRejectsNonArraySections() {
+        let json = #"{"inbounds":{},"outbounds":[]}"#
+        let config = XrayConfig(json: json)
+        XCTAssertThrowsError(try config.validateOffline()) { error in
+            guard case XrayError.invalidInput(let message) = error else {
+                return XCTFail("expected .invalidInput, got \(error)")
+            }
+            XCTAssertTrue(message.contains("inbounds"), "got: \(message)")
+        }
     }
 }

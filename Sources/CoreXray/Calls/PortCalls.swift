@@ -14,13 +14,18 @@ internal final class PortCalls {
     private init() {}
 
     internal static func spare(count: Int, excluding: [Int]) throws -> [Int] {
-        // Strict: a missing list is a broken answer, not an empty one —
-        // an empty list would send `verify` into ten wasted rounds first.
-        try EngineTransport.ask(
+        // Strict about shape, lenient about count: a missing list is a
+        // broken answer, but `verify` legitimately asks for remainders —
+        // and an answer with fewer ports than asked just yields fewer.
+        let ports = try EngineTransport.ask(
             .sparePorts,
             payload: Xray.PortRequest(count: count, excluding: excluding),
             as: Xray.PortList.self
         ).ports
+        guard ports.allSatisfy({ (1 ... 65_535).contains($0) }) else {
+            throw XrayError.bridgeFailed("the engine answered with ports outside 1...65535")
+        }
+        return ports
     }
 
     internal static func verify(count: Int, excluding: [Int]) throws -> [Int] {
@@ -33,10 +38,18 @@ internal final class PortCalls {
             if candidates.isEmpty { break }
             for port in candidates where !verified.contains(port) {
                 excluded.append(port)
-                if canBindTCPPort(port) {
-                    verified.append(port)
-                    if verified.count == count { return verified }
+                // One probe per family: TCP first (the listener the
+                // package itself opens), then UDP (engine inbounds
+                // listen on UDP by default). A refusal names itself —
+                // EACCES is privileges, anything else is in use.
+                if let failure = bindErrno(for: port, udp: false) ?? bindErrno(for: port, udp: true) {
+                    if failure == EACCES {
+                        throw XrayError.invalidInput("port \(port) needs privileges the app does not have (ports below 1024): exclude it or add the right entitlement")
+                    }
+                    continue
                 }
+                verified.append(port)
+                if verified.count == count { return verified }
             }
         }
         throw XrayError.bridgeFailed("could not find \(count) bindable local ports")
@@ -45,9 +58,25 @@ internal final class PortCalls {
     /// True when nothing on this machine is listening on `port` for
     /// 127.0.0.1 TCP — a best-effort check at call time, not a reservation.
     internal static func canBindTCPPort(_ port: Int) -> Bool {
-        guard (1 ... 65_535).contains(port) else { return false }
-        let descriptor = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)
-        guard descriptor >= 0 else { return false }
+        bindErrno(for: port, udp: false) == nil
+    }
+
+    /// Same check for UDP: engine inbounds listen on UDP by default
+    /// (SOCKS especially), so a TCP-only check can clear a port the
+    /// launch then fails on.
+    internal static func canBindUDPPort(_ port: Int) -> Bool {
+        bindErrno(for: port, udp: true) == nil
+    }
+
+    /// The raw bind probe: nil means the port bound (and was released),
+    /// otherwise the errno. UDP probes skip `SO_REUSEADDR` — the engine
+    /// binds raw, so the check must too. Wildcard and IPv6 listeners are
+    /// out of scope: this only sees 127.0.0.1, which the probe, and the
+    /// package's own listeners, all use.
+    internal static func bindErrno(for port: Int, udp: Bool) -> Int32? {
+        guard (1 ... 65_535).contains(port) else { return EINVAL }
+        let descriptor = socket(AF_INET, udp ? SOCK_DGRAM : SOCK_STREAM, udp ? IPPROTO_UDP : IPPROTO_TCP)
+        guard descriptor >= 0 else { return errno }
         defer { close(descriptor) }
         var address = sockaddr_in()
         // `sin_len` exists only on Darwin; the Glibc layout has no such
@@ -58,11 +87,12 @@ internal final class PortCalls {
         address.sin_family = sa_family_t(AF_INET)
         address.sin_port = in_port_t(port).bigEndian
         address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
-        return withUnsafePointer(to: &address) { pointer in
+        let bound: Bool = withUnsafePointer(to: &address) { pointer in
             pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
                 bind(descriptor, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) == 0
             }
         }
+        return bound ? nil : errno
     }
 }
 

@@ -13,7 +13,7 @@ internal final class KeyCalls {
 }
 
 extension Xray {
-    internal struct AgeKindChoice: Encodable {
+    internal struct AgeKindChoice: Encodable, Sendable {
         let kind: XrayAgeKeyPairKind
 
         enum CodingKeys: String, CodingKey {

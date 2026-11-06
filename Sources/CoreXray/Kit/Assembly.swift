@@ -198,6 +198,18 @@ public struct XrayAssembly {
     /// XrayMetrics listener, the `stats` section, and the policy switches
     /// `XrayTrafficMonitor` reads. Nil means no traffic counters.
     public var metricsPort: Int?
+    /// SOCKS-inbound credentials, forwarded to the session options. Guards
+    /// every SOCKS inbound (including transform-added ones) — or rejects
+    /// the document when none exists to guard.
+    public var credentials: XrayCredentials?
+    /// Extra process-environment entries for the launched document
+    /// (`xray.location.asset`, `xray.tun.fd`), forwarded to the session
+    /// options. Document values win over these on key conflicts.
+    public var environment: [String: String]?
+    /// Fail-fast geo gate over the assembled document. Disable only when
+    /// you checked the databases yourself — references the engine cannot
+    /// resolve fail at traffic time, not at launch.
+    public var geoCheck: Bool
     /// Final patch after everything else — it sees the fully assembled
     /// document, so it overrules every setting above, including sniffing
     /// and routing. Same position as the low-level transform, for
@@ -218,6 +230,9 @@ public struct XrayAssembly {
         sniffing: XraySniffing? = nil,
         observatory: XrayObservatory? = nil,
         metricsPort: Int? = nil,
+        credentials: XrayCredentials? = nil,
+        environment: [String: String]? = nil,
+        geoCheck: Bool = true,
         patch: ((inout XrayJSONObject) -> Void)? = nil
     ) {
         self.source = source
@@ -233,6 +248,9 @@ public struct XrayAssembly {
         self.sniffing = sniffing
         self.observatory = observatory
         self.metricsPort = metricsPort
+        self.credentials = credentials
+        self.environment = environment
+        self.geoCheck = geoCheck
         self.patch = patch
     }
 
@@ -281,8 +299,11 @@ public struct XrayAssembly {
                 patch?(&dict)
             },
             routing: routing,
+            credentials: credentials,
             tun: tun,
+            environment: environment,
             observatory: observatory,
+            geoCheck: geoCheck,
             dns: dns,
             fakeDNS: fakeDNS,
             log: log,

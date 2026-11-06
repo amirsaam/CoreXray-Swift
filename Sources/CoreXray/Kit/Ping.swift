@@ -109,6 +109,21 @@ extension Xray {
         guard targets.count <= 5 else {
             throw XrayError.invalidInput("ping measures at most 5 targets at once; split larger pools into batches")
         }
+        // Batch inputs are checked before touching the engine: a blank
+        // target poisons the whole batch (results are positional —
+        // result[i] answers target[i]), so it fails here with its index
+        // instead of somewhere inside the engine's converter. An empty
+        // tag is a different mistake: nil means "the default outbound",
+        // "" matches no outbound, so "" fails instead of measuring the
+        // wrong thing.
+        for (index, target) in targets.enumerated() {
+            guard !target.config.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw XrayError.invalidInput("ping target at index \(index) has an empty config")
+            }
+            if let tag = target.outboundTag, tag.isEmpty {
+                throw XrayError.invalidInput("ping target at index \(index) has an empty outboundTag: use nil for the default outbound, not \"\"")
+            }
+        }
         guard options.timeoutSeconds > 0 else {
             throw XrayError.invalidInput("ping timeout must be greater than zero seconds")
         }

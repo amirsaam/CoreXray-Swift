@@ -68,7 +68,10 @@ try await session.start(
 
 Prefer the manual three stages when the UI needs the server list (names,
 ping ranking — see `06-ping.md`); prefer the one-call form for "just
-reconnect to the subscription" buttons.
+reconnect to the subscription" buttons. Asset-directory precedence inside
+the one-call form: your `options.environment` first, then an
+`xray.location.asset` the feed text itself carries, then `assetDirectory` —
+so a feed that pins its own asset path wins over the directory you pass.
 
 ## Single-link input
 

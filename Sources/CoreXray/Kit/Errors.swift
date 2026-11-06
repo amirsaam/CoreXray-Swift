@@ -36,19 +36,21 @@ public enum XrayError: Swift.Error, LocalizedError, Sendable {
     }
 
     /// What to do about it, in one line. The message says what happened;
-    /// this says where to look next.
+    /// this says where to look next — including when the failure names
+    /// a step (fetch, metrics, log tail, envelope), which means the step
+    /// broke, not the operation around it.
     public var recoveryHint: String? {
         switch self {
         case .engineFailed:
-            return "the engine rejected the document — validate the config to see its complaint"
+            return "the engine refused the operation — for configs, validate(...) shows its complaint; for anything else the message says what it wanted"
         case .bridgeFailed:
-            return "the bridge itself failed — check the document size and shape before retrying"
+            return "something outside the engine failed — the message names the step (fetch, metrics, log tail, envelope): check that step before retrying"
         case .invalidInput:
             return "the input was unusable before reaching the engine — check the call's documented rules"
         case .timedOut:
-            return "the engine did not answer in time — check geo assets and listener ports, then retry"
+            return "the engine did not answer in time — for a start, check geo assets and listener ports, then health(); a wedged bridge needs a process restart"
         case .geoAssets:
-            return "fetch the database with XrayGeoDownloader or point XraySessionOptions.environment at it"
+            return "fetch the database with XrayGeoDownloader into a searched directory, or pass xray.location.asset through XraySessionOptions.environment"
         }
     }
 }

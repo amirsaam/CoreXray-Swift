@@ -116,6 +116,12 @@ public enum XrayEngineLogKind {
 /// session to a single serial context: the engine calls underneath are
 /// serialized, but interleaving two sessions' start/stop sequences from
 /// different threads is a logic race this type does not referee.
+/// Sessions are ownership handles, not isolated engines — only one
+/// instance runs per process, a new start replaces the old one, and a
+/// superseded session's late-arriving success stamps nothing (its
+/// generation lost). The async `logger` you hand to `newSession` runs
+/// uncaptured from any lock, so it must be thread-safe itself when the
+/// session is touched from several threads.
 ///
 /// ```swift
 /// let session = Xray.shared.newSession { print("[xray]", $0) }
@@ -141,7 +147,25 @@ public final class XraySession: @unchecked Sendable {
     /// timed-out start's compensating stop can tell a stale timeout
     /// from the current instance and never kill a newer launch.
     private var _generation: Int = 0
+    /// Process-wide launch epoch shared by every session. Sessions
+    /// multiply (app plus provider, tests, previews) but the engine is
+    /// one global instance, so a cleanup must also prove nothing else
+    /// launched since — the per-session epoch alone can't see across
+    /// sessions. Every start and every stop bumps it alongside the
+    /// session epoch; a compensation only fires when both still match
+    /// what it captured.
+    private static let processLock = NSLock()
+    private static var _processGeneration: Int = 0
+    /// Timestamp formatting goes through one shared formatter, and
+    /// `ISO8601DateFormatter` is not thread-safe: log lines arrive from
+    /// user threads, detached cleanups, and concurrent sessions, so
+    /// every format goes through this lock.
+    private static let stampLock = NSLock()
     private static let stamp = ISO8601DateFormatter()
+    private static func stamped(_ message: String) -> String {
+        let prefix = stampLock.withLock { stamp.string(from: Date()) }
+        return "\(prefix) \(message)"
+    }
 
     /// Transport for feed fetches. `URLSession.shared` in production;
     /// tests swap in a stubbed configuration. Set once before the first
@@ -278,19 +302,62 @@ public final class XraySession: @unchecked Sendable {
             if routing.rules.contains(where: { $0.isIneffective }) {
                 throw XrayError.invalidInput("routing contains a rule that selects nothing: the engine rejects rules with no traffic fields — give it domains, ips, a port, protocols, or inbound tags (a destination alone matches no traffic)")
             }
+            for rule in routing.rules {
+                for (field, value) in [("port", rule.port), ("network", rule.network)] {
+                    if let value, value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        throw XrayError.invalidInput("routing rule has an empty \(field): the engine reads \"\" as a value, not as unset — drop the field or set it")
+                    }
+                }
+                if rule.protocols.contains(where: { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) {
+                    throw XrayError.invalidInput("routing rule has an empty protocol entry: the engine matches it against nothing — drop it or set it")
+                }
+            }
             let proxyTag: String
             if routing.needsProxy {
                 guard let resolved = Self.ensureProxyTag(in: &dict) else {
-                    throw XrayError.invalidInput("routing sends traffic to the proxy but the document has no outbounds")
+                    throw XrayError.invalidInput("routing sends traffic to the proxy but the document has no usable outbounds")
                 }
                 proxyTag = resolved
             } else {
                 proxyTag = Self.firstOutboundTag(in: dict) ?? "proxy"
             }
             dict["routing"] = .object(routing.wireObject(proxyTag: proxyTag))
+            // A custom tag the document never defines fails at runtime,
+            // not at build — and the transform below can still add the
+            // outbound — so this warns instead of throwing. Forward
+            // references by design, typos by accident: read the line.
+            if case .object(let assembled) = dict["routing"],
+               case .array(let rules) = assembled["rules"] {
+                var defined: Set<String> = ["direct", "block", "dns-out"]
+                if case .array(let outbounds) = dict["outbounds"] {
+                    for outbound in outbounds {
+                        if case .object(let entry) = outbound,
+                           case .string(let tag) = entry["tag"] {
+                            defined.insert(tag)
+                        }
+                    }
+                }
+                for rule in rules {
+                    if case .object(let entry) = rule,
+                       case .string(let tag) = entry["outboundTag"],
+                       !defined.contains(tag) {
+                        log("routing rule points at '\(tag)', which no outbound defines yet: a transform may add it, or it may be a typo that fails at traffic time")
+                    }
+                }
+            }
+            // A match-all sitting above `final` starves it: every routed
+            // connection is already claimed, so the final silently never
+            // fires. Flag it — ordering, not engine behavior.
+            let matchAll = routing.rules.filter { $0.isMatchAll }
+            if routing.final != nil && matchAll.count > 1 {
+                log("routing has \(matchAll.count - 1) match-all rule(s) above `final`: they claim every connection, so the final never fires — move them below or narrow them")
+            }
         }
-        try Self.applyCredentials(options.credentials, to: &dict)
         options.transform?(&dict)
+        // Credentials run after the transform, so SOCKS inbounds the
+        // transform adds are guarded too — guarding before it left
+        // exactly those open while claiming the configuration guarded.
+        try Self.applyCredentials(options.credentials, to: &dict)
         // The relay route is checked after the transform runs, so relays
         // the transform adds are covered too — and standard outbounds are
         // backfilled after that, so a referenced `dns-out` always exists.
@@ -342,11 +409,12 @@ public final class XraySession: @unchecked Sendable {
     public func start(_ config: XrayConfig) throws {
         try replaceRunningInstance()
         let generation = nextGeneration()
+        let process = Self.currentProcessGeneration()
         let dict = documentDict(from: config.json)
         if let dict { clearStaleTunDescriptorIfNeeded(for: dict) }
         log("launching engine (\(config.json.count) bytes of configuration)")
         try LifecycleCalls.launch(config.json)
-        if generation == currentGeneration() {
+        if generation == currentGeneration() && process == Self.currentProcessGeneration() {
             if let dict { recordLogPaths(from: dict) }
             markLaunched()
             log("engine launched")
@@ -365,11 +433,12 @@ public final class XraySession: @unchecked Sendable {
     public func start(rawJSON json: String) throws {
         try replaceRunningInstance()
         let generation = nextGeneration()
+        let process = Self.currentProcessGeneration()
         let dict = documentDict(from: json)
         if let dict { clearStaleTunDescriptorIfNeeded(for: dict) }
         log("launching engine from raw JSON (\(json.count) bytes)")
         try LifecycleCalls.launch(json)
-        if generation == currentGeneration() {
+        if generation == currentGeneration() && process == Self.currentProcessGeneration() {
             if let dict { recordLogPaths(from: dict) }
             markLaunched()
             log("engine launched")
@@ -403,7 +472,11 @@ public final class XraySession: @unchecked Sendable {
     /// Stops this process's running engine instance. Safe when idle: the
     /// engine still answers with success. The stop invalidates any
     /// timed-out start still settling in the background, so its
-    /// compensating cleanup stands down instead of racing you.
+    /// compensating cleanup stands down instead of racing you. Same for
+    /// a stop racing an unsettled launch on another task: the call
+    /// below always wins the lane, so stop first, then confirm with
+    /// `isRunning()` — there is no generation guard that can make a
+    /// stop wait for a launch still in flight.
     public func stop() throws {
         _ = nextGeneration()
         log("stopping engine")
@@ -429,31 +502,140 @@ public final class XraySession: @unchecked Sendable {
         return try LifecycleCalls.isRunning()
     }
 
-    /// Bumps the launch epoch and returns the new value. Every start
-    /// attempt calls this before launching; `stop` calls it too, so a
-    /// pending compensating stop from an older attempt stands down.
+    /// Bumps the session launch epoch (and the process epoch with it)
+    /// and returns the new session generation. Every start path calls
+    /// this; every guarded stamp compares against the captured value.
     private func nextGeneration() -> Int {
-        stateLock.withLock {
+        let session = stateLock.withLock {
             _generation += 1
             return _generation
         }
+        _ = Self.claimProcessGeneration()
+        return session
     }
 
     /// The current launch epoch, for guarding post-launch stamps: a
     /// launch that resolves after a newer start or a stop must not
     /// stamp `connectedSince` or adopt log paths for an instance that
-    /// is no longer current.
+    /// is no longer current. Cross-session staleness is checked
+    /// separately against the process epoch below.
     private func currentGeneration() -> Int {
         stateLock.withLock { _generation }
     }
 
+    /// Bumps the process-wide launch epoch and returns the new value.
+    /// Sessions multiply (app plus provider, tests, previews) but the
+    /// engine is one global instance, so a cleanup must also prove
+    /// nothing else launched since. Lock order is always stateLock
+    /// before processLock — never the reverse.
+    private static func claimProcessGeneration() -> Int {
+        processLock.withLock {
+            _processGeneration += 1
+            return _processGeneration
+        }
+    }
+
+    /// The current process-wide epoch, read under its lock.
+    private static func currentProcessGeneration() -> Int {
+        processLock.withLock { _processGeneration }
+    }
+
     /// Decodes launch JSON back to its document, for post-launch
     /// adoption. Documents come out of `build`, so this only fails on
-    /// programmer error — nil means skip adoption, never throw.
+    /// programmer error — nil means skip adoption, never throw. Falls
+    /// back to a comment-stripped decode: the engine's loader accepts
+    /// `//` and `/* */` comments, so a commented document the engine
+    /// launches must clear stale fds and adopt log paths too — a
+    /// strict-only decode would silently skip both.
     private func documentDict(from json: String) -> XrayJSONObject? {
-        guard let decoded = try? JSONDecoder().decode(XrayJSONValue.self, from: Data(json.utf8)),
+        let data = Data(json.utf8)
+        if let decoded = try? JSONDecoder().decode(XrayJSONValue.self, from: data),
+           case .object(let dict) = decoded { return dict }
+        guard let stripped = Self.strippingJSONComments(json),
+              let decoded = try? JSONDecoder().decode(XrayJSONValue.self, from: Data(stripped.utf8)),
               case .object(let dict) = decoded else { return nil }
         return dict
+    }
+
+    /// Removes `//` line and `/* */` block comments outside string
+    /// literals, mirroring what the engine's loader accepts. Escaped
+    /// quotes inside strings are honored, so a `//` inside a value
+    /// survives. Returns nil when quotes never close — garbage in,
+    /// no decode attempted.
+    private static func strippingJSONComments(_ json: String) -> String? {
+        var out = ""
+        out.reserveCapacity(json.count)
+        var index = json.startIndex
+        var inString = false
+        while index < json.endIndex {
+            let char = json[index]
+            if inString {
+                out.append(char)
+                if char == "\\" {
+                    let next = json.index(after: index)
+                    if next < json.endIndex {
+                        out.append(json[next])
+                        index = json.index(after: next)
+                        continue
+                    }
+                } else if char == "\"" {
+                    inString = false
+                }
+                index = json.index(after: index)
+                continue
+            }
+            if char == "\"" {
+                inString = true
+                out.append(char)
+                index = json.index(after: index)
+                continue
+            }
+            let next = json.index(after: index)
+            if char == "/" && next < json.endIndex {
+                if json[next] == "/" {
+                    while index < json.endIndex && json[index] != "\n" {
+                        index = json.index(after: index)
+                    }
+                    continue
+                }
+                if json[next] == "*" {
+                    var cursor = json.index(after: next)
+                    var closed = false
+                    while cursor < json.endIndex {
+                        if json[cursor] == "*" {
+                            let after = json.index(after: cursor)
+                            if after < json.endIndex && json[after] == "/" {
+                                cursor = json.index(after: after)
+                                closed = true
+                                break
+                            }
+                        }
+                        cursor = json.index(after: cursor)
+                    }
+                    guard closed else { return nil }
+                    index = cursor
+                    continue
+                }
+            }
+            out.append(char)
+            index = json.index(after: index)
+        }
+        guard !inString else { return nil }
+        return out
+    }
+
+    /// An asset directory named inside a JSON feed's own `env`, if any.
+    /// A feed that pins its geodata next to itself travels with its
+    /// address book — used only when neither the caller options nor an
+    /// explicit asset directory already named one.
+    internal static func feedEnvAsset(from sourceText: String) -> String? {
+        guard let data = sourceText.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(XrayJSONValue.self, from: data),
+              case .object(let dict) = decoded,
+              case .object(let env) = dict["env"] else { return nil }
+        if let dir = env["xray.location.asset"]?.stringValue, !dir.isEmpty { return dir }
+        if let dir = env["XRAY_LOCATION_ASSET"]?.stringValue, !dir.isEmpty { return dir }
+        return nil
     }
 
     /// Clears a stale TUN descriptor from the process before launching
@@ -493,13 +675,23 @@ public final class XraySession: @unchecked Sendable {
         }
     }
 
-    /// Stops the instance left behind by a timed-out start, but only
-    /// when nothing newer began since: a follow-up start or stop bumps
-    /// the epoch, and a stale timeout must never kill the current
-    /// instance. Best effort — errors are swallowed, success is logged.
-    private func stopIfCurrent(generation: Int) {
-        let current = stateLock.withLock { _generation == generation }
-        guard current else { return }
+    /// Stops the instance left behind by a timed-out or cancelled start,
+    /// but only when nothing newer began since — on this session or any
+    /// other. A follow-up start or stop on this session bumps the
+    /// session epoch; a start on another session bumps the process
+    /// epoch; either way a stale compensation stands down instead of
+    /// killing the current instance. The epoch is claimed (bumped) under
+    /// the locks before stopping, so two racing compensations can't
+    /// both fire: the second sees the claim and stands down. Best
+    /// effort — errors are swallowed, success is logged.
+    private func stopIfCurrent(generation: Int, process: Int) {
+        let proceed = stateLock.withLock { _generation == generation }
+            && Self.processLock.withLock {
+                guard Self._processGeneration == process else { return false }
+                Self._processGeneration += 1
+                return true
+            }
+        guard proceed else { return }
         try? stop()
     }
 
@@ -538,30 +730,53 @@ public final class XraySession: @unchecked Sendable {
         let config = try build(source, options: options)
         try replaceRunningInstance()
         let generation = nextGeneration()
+        let process = Self.currentProcessGeneration()
         let dict = documentDict(from: config.json)
         if let dict { clearStaleTunDescriptorIfNeeded(for: dict) }
         log("launching engine (\(config.json.count) bytes of configuration)")
         let json = config.json
+        let override = launchOverride
+        let launchTask = Task.detached {
+            if let override {
+                try override(json)
+            } else {
+                try LifecycleCalls.launch(json)
+            }
+        }
         do {
-            try await Task.detached { try LifecycleCalls.launch(json) }.value
+            try await launchTask.value
         } catch is CancellationError {
             // The detached launch doesn't inherit cancellation, so it
             // may still be settling: park a generation-guarded cleanup
-            // so the orphan never outlives the attempt that spawned it.
-            // A launch that already failed needs no cleanup — the guard
-            // stands down on its own — so only cancellation reaps.
+            // that waits for the orphan to settle first, then stops it —
+            // stopping before the launch reaches the lane would let the
+            // orphan land after us and run forever. A launch that
+            // already failed needs no cleanup — the guards stand down on
+            // their own — so only cancellation reaps.
             Task.detached { [weak self] in
-                self?.stopIfCurrent(generation: generation)
+                _ = try? await launchTask.value
+                self?.stopIfCurrent(generation: generation, process: process)
             }
             throw CancellationError()
         }
-        if generation == currentGeneration() {
+        if generation == currentGeneration() && process == Self.currentProcessGeneration() {
             if let dict { recordLogPaths(from: dict) }
             markLaunched()
             log("engine launched")
         } else {
             log("engine launch superseded by a newer start; stamps skipped")
         }
+    }
+
+    /// Box holding the deadline race's shared state: the timer and the
+    /// launch waiter are created on one executor and cancelled from the
+    /// cancellation handler on another, and the continuation is resumed
+    /// exactly once from whichever side settles first.
+    private final class DeadlineRaceBox: @unchecked Sendable {
+        let lock = NSLock()
+        var timer: Task<Void, Never>?
+        var waiter: Task<Void, Never>?
+        var continuation: CheckedContinuation<Void, Error>?
     }
 
     /// Starts a source like `start(_:options:)`, but gives up if the
@@ -577,7 +792,10 @@ public final class XraySession: @unchecked Sendable {
     /// stopped in the background — but only when nothing newer began
     /// since, so a follow-up start is never killed by a stale timeout.
     /// `connectedSince` is stamped only when the launch itself
-    /// succeeded, never on the timeout path.
+    /// succeeded, never on the timeout path. Cancelling this call
+    /// shortens the wait the same way: the timer and waiter stop, the
+    /// caller gets `CancellationError` at once, and the same
+    /// settle-first cleanup parks in the background.
     public func start(
         _ source: XrayConfigSource,
         options: XraySessionOptions? = nil,
@@ -588,6 +806,7 @@ public final class XraySession: @unchecked Sendable {
         // Captured after the replace-stop above: any stop or start
         // from here on invalidates this attempt's cleanup.
         let generation = nextGeneration()
+        let process = Self.currentProcessGeneration()
         let dict = documentDict(from: config.json)
         if let dict { clearStaleTunDescriptorIfNeeded(for: dict) }
         log("launching engine (\(config.json.count) bytes of configuration)")
@@ -608,35 +827,69 @@ public final class XraySession: @unchecked Sendable {
         // on its own and is stopped in the background, but only when
         // nothing newer began since.
         let gate = StartRaceGate()
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            let timer = Task.detached { [weak self] in
-                do {
-                    try await Task.sleep(for: deadline)
-                } catch {
-                    return // The launch won and cancelled us; nothing to do.
-                }
-                gate.settleOnce {
-                    Task.detached { [weak self] in
-                        _ = try? await launchTask.value
-                        self?.stopIfCurrent(generation: generation)
+        let box = DeadlineRaceBox()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                box.lock.withLock {
+                    box.continuation = continuation
+                    box.timer = Task.detached { [weak self] in
+                        do {
+                            try await Task.sleep(for: deadline)
+                        } catch {
+                            return // The launch won and cancelled us; nothing to do.
+                        }
+                        gate.settleOnce {
+                            Task.detached { [weak self] in
+                                _ = try? await launchTask.value
+                                self?.stopIfCurrent(generation: generation, process: process)
+                            }
+                            box.lock.withLock { box.continuation = nil }
+                            continuation.resume(throwing: XrayError.timedOut(
+                                "engine start exceeded its deadline and was stopped; check geo assets and listener ports"
+                            ))
+                        }
                     }
-                    continuation.resume(throwing: XrayError.timedOut(
-                        "engine start exceeded its deadline and was stopped; check geo assets and listener ports"
-                    ))
+                    box.waiter = Task.detached {
+                        do {
+                            try await launchTask.value
+                            box.lock.withLock { box.timer?.cancel() }
+                            gate.settleOnce {
+                                box.lock.withLock { box.continuation = nil }
+                                continuation.resume()
+                            }
+                        } catch {
+                            box.lock.withLock { box.timer?.cancel() }
+                            gate.settleOnce {
+                                box.lock.withLock { box.continuation = nil }
+                                continuation.resume(throwing: error)
+                            }
+                        }
+                    }
                 }
             }
-            Task.detached {
-                do {
-                    try await launchTask.value
-                    timer.cancel()
-                    gate.settleOnce { continuation.resume() }
-                } catch {
-                    timer.cancel()
-                    gate.settleOnce { continuation.resume(throwing: error) }
+        } onCancel: {
+            let continuation: CheckedContinuation<Void, Error>? = box.lock.withLock {
+                box.timer?.cancel()
+                box.waiter?.cancel()
+                box.timer = nil
+                box.waiter = nil
+                let pending = box.continuation
+                box.continuation = nil
+                return pending
+            }
+            // A cancelled call refuses to wait for the orphan — same
+            // settle-first cleanup as the timeout, then out at once.
+            // A post-cancel win still flows through the gate below and
+            // stamps nothing, because the continuation is already gone.
+            gate.settleOnce {
+                Task.detached { [weak self] in
+                    _ = try? await launchTask.value
+                    self?.stopIfCurrent(generation: generation, process: process)
                 }
+                continuation?.resume(throwing: CancellationError())
             }
         }
-        if generation == currentGeneration() {
+        if generation == currentGeneration() && process == Self.currentProcessGeneration() {
             if let dict { recordLogPaths(from: dict) }
             markLaunched()
             log("engine launched")
@@ -693,6 +946,7 @@ public final class XraySession: @unchecked Sendable {
         var problems: [String] = []
         var sawTun = false
         var sawTunFD = false
+        var seenPorts: [Int: String] = [:]
         if case .array(let inbounds) = object["inbounds"] {
             for inbound in inbounds {
                 guard let entry = inbound.objectValue else { continue }
@@ -708,9 +962,21 @@ public final class XraySession: @unchecked Sendable {
                     // to read packets from. Empty strings count as
                     // missing on both sides.
                     if let env = object["env"]?.objectValue {
-                        let docFDs = [env["xray.tun.fd"]?.stringValue, env["XRAY_TUN_FD"]?.stringValue]
-                        if docFDs.contains(where: { !($0 ?? "").isEmpty }) {
-                            sawTunFD = true
+                        for key in ["xray.tun.fd", "XRAY_TUN_FD"] {
+                            if let raw = env[key] {
+                                if let text = raw.stringValue {
+                                    if !text.isEmpty { sawTunFD = true }
+                                } else {
+                                    // Seen, but unusable: the launcher
+                                    // writes the descriptor as text, and a
+                                    // number here is a construction bug,
+                                    // not a descriptor.
+                                    sawTunFD = true
+                                    problems.append(
+                                        "the tun descriptor '\(key)' is not a string: write the number as text through XraySessionOptions.environment"
+                                    )
+                                }
+                            }
                         }
                     }
                     if !sawTunFD {
@@ -729,6 +995,34 @@ public final class XraySession: @unchecked Sendable {
                             )
                         }
                     }
+                } else if let rawPort = entry["port"] {
+                    // Every non-tun inbound listens on a socket: flag a
+                    // missing, malformed, out-of-range, or duplicate port
+                    // here instead of at engine traffic time. `tun` is
+                    // skipped deliberately — the engine ignores `port`
+                    // for it, so flagging one would be noise.
+                    let port: Int? = switch rawPort {
+                    case .int(let port): port
+                    case .string(let text): Int(text)
+                    default: nil
+                    }
+                    if let port, (1 ... 65_535).contains(port) {
+                        if let clash = seenPorts[port] {
+                            problems.append(
+                                "inbounds '\(clash)' and '\(tag)' both listen on port \(port): give each its own"
+                            )
+                        } else {
+                            seenPorts[port] = tag
+                        }
+                    } else {
+                        problems.append(
+                            "inbound '\(tag)' has an unusable port: set an integer 1...65535"
+                        )
+                    }
+                } else {
+                    problems.append(
+                        "inbound '\(tag)' sets no port: the engine would fail it at traffic time"
+                    )
                 }
                 guard let listen = entry["listen"]?.stringValue else {
                     problems.append(
@@ -743,6 +1037,15 @@ public final class XraySession: @unchecked Sendable {
                 }
             }
         }
+        if case .object(let metrics) = object["metrics"],
+           let listen = metrics["listen"]?.stringValue,
+           let portText = listen.split(separator: ":").last,
+           let port = Int(portText),
+           let clash = seenPorts[port] {
+            problems.append(
+                "the metrics listener on port \(port) collides with inbound '\(clash)': give metrics its own port"
+            )
+        }
         if !sawTun {
             problems.append("no tun inbound: a packet tunnel with nothing to pump packets through launches a proxy, not a tunnel")
         } else if !sawTunFD {
@@ -756,10 +1059,13 @@ public final class XraySession: @unchecked Sendable {
     /// fetched fresh every call: nothing is cached, nothing
     /// auto-refreshes. `http(s)` requires status 200; anything else
     /// (including `file:` URLs, handy for tests and bundled feeds) is
-    /// accepted as-is. When `assetDirectory` is given it becomes
-    /// `xray.location.asset` unless the options already set one, missing
-    /// referenced databases are fetched into it, and the launch then runs
-    /// under `deadline` like `start(_:options:deadline:)`. Feeds are capped
+    /// accepted as-is. When `assetDirectory` is given it becomes the
+    /// download location unless something already named one: explicit
+    /// options environment wins first, then an `xray.location.asset`
+    /// inside the feed JSON's own `env`, then the directory itself.
+    /// Missing referenced databases are fetched into it, and the launch
+    /// then runs under `deadline` like
+    /// `start(_:options:deadline:)`. Feeds are capped
     /// at the engine's own request limit (`timeoutSeconds` bounds the
     /// wait): a declared or actual body past it throws before anything
     /// is decoded, so a hostile feed can't park memory. The top-up scans
@@ -802,13 +1108,28 @@ public final class XraySession: @unchecked Sendable {
                expected > 0, expected < Int64(cap) {
                 data.reserveCapacity(Int(expected))
             }
-            for try await byte in bytes {
-                data.append(byte)
+            // Chunked: checking the cap per byte on a hostile multi-MB
+            // body still walks every byte — accumulate in 4 KiB pieces
+            // and check per piece instead.
+            var chunk = [UInt8]()
+            chunk.reserveCapacity(4096)
+            func flushChunk() throws {
+                data.append(contentsOf: chunk)
+                chunk.removeAll(keepingCapacity: true)
                 guard data.count <= cap else {
                     throw XrayError.invalidInput(
                         "subscription feed exceeds the \(cap)-byte cap"
                     )
                 }
+            }
+            for try await byte in bytes {
+                chunk.append(byte)
+                if chunk.count >= 4096 {
+                    try flushChunk()
+                }
+            }
+            if !chunk.isEmpty {
+                try flushChunk()
             }
             guard let decoded = String(data: data, encoding: .utf8), !decoded.isEmpty else {
                 throw XrayError.invalidInput("subscription at \(url) is empty or not text")
@@ -828,7 +1149,11 @@ public final class XraySession: @unchecked Sendable {
             if (error as NSError).code == NSURLErrorTimedOut {
                 throw XrayError.timedOut("subscription fetch exceeded its \(timeoutSeconds)s budget")
             }
-            throw XrayError.bridgeFailed("could not fetch subscription: \(error.localizedDescription)")
+            // The taxonomy has five cases and this is the honest one:
+            // the fetch failed outside the engine, and the step is
+            // named so retries know where to look (XrayDNS, route,
+            // server) instead of re-checking the document.
+            throw XrayError.bridgeFailed("subscription fetch (network) failed: \(error.localizedDescription)")
         }
         let unwrapped = try Xray.shared.decodeSubscription(text, ageSecret: ageSecret)
         var resolved = options ?? Xray.shared.options()
@@ -837,18 +1162,23 @@ public final class XraySession: @unchecked Sendable {
             // Either spelling counts: the engine reads the dotted name
             // first and the underscore one second, so a caller-set
             // `XRAY_LOCATION_ASSET` already answers the lookup and must
-            // not be overridden.
+            // not be overridden. Next wins a feed that pins its own
+            // geodata in its JSON `env` (the databases travel with the
+            // feed); the explicit directory is the last resort.
             if env["xray.location.asset"] == nil && env["XRAY_LOCATION_ASSET"] == nil {
-                env["xray.location.asset"] = assetDirectory.path
+                env["xray.location.asset"] = Self.feedEnvAsset(from: unwrapped) ?? assetDirectory.path
             }
             resolved.environment = env
+            let topUpDirectory = URL(
+                fileURLWithPath: env["xray.location.asset"] ?? env["XRAY_LOCATION_ASSET"] ?? assetDirectory.path
+            )
             // Top up without assembling twice: scan the feed text plus
             // the typed options for geo references (no conversion, no
             // transform, no gate), fetch what is missing, then run the
             // single real build with the gate on.
             let needed = Self.referencedDatabases(sourceText: unwrapped, options: resolved)
             if !needed.isEmpty {
-                _ = try await Xray.shared.ensureAssets(for: nil, databases: needed, in: assetDirectory)
+                _ = try await Xray.shared.ensureAssets(for: nil, databases: needed, in: topUpDirectory)
             }
             // External files have no downloader behind them: fail here,
             // naming the file and where it must be placed, instead of
@@ -952,7 +1282,10 @@ public final class XraySession: @unchecked Sendable {
     /// Fail-fast geo database check over the final, post-transform
     /// document: what the routing and dns sections reference must exist
     /// wherever the engine will look for it. The document's `env` counts
-    /// first, so an asset path shipped in it overrides the defaults.
+    /// first, so an asset path shipped in it overrides the defaults —
+    /// same precedence as the engine's own lookup, which checks the
+    /// document environment, then the process environment, before the
+    /// fixed fallback directories.
     private static func checkGeoAssets(in config: XrayJSONObject) throws {
         let env = config["env"]?.objectValue
         try XrayGeoAssets.check(
@@ -980,7 +1313,7 @@ public final class XraySession: @unchecked Sendable {
         var guarded = false
         for index in inbounds.indices {
             if case .object(var inbound) = inbounds[index], inbound["protocol"] == .string("socks") {
-                Self.guardSocksInbound(&inbound, using: credentials)
+                try Self.guardSocksInbound(&inbound, using: credentials)
                 inbounds[index] = .object(inbound)
                 guarded = true
             }
@@ -991,32 +1324,43 @@ public final class XraySession: @unchecked Sendable {
         config["inbounds"] = .array(inbounds)
     }
 
-    /// Guards one SOCKS inbound object with a username + password.
-    private static func guardSocksInbound(_ inbound: inout XrayJSONObject, using credentials: XrayCredentials) {
-        var settings = inbound["settings"]?.objectValue ?? [:]
-        settings["auth"] = .string("password")
-        settings["users"] = .array([.object([
+    /// Guards one SOCKS inbound object with a username + password. An
+    /// inbound that already carries `users` or `auth` throws instead of
+    /// being silently replaced: overwriting the document's own guard
+    /// would lock out whoever those credentials belong to, and the
+    /// caller must resolve the conflict deliberately.
+    private static func guardSocksInbound(_ inbound: inout XrayJSONObject, using credentials: XrayCredentials) throws {
+        let settings = inbound["settings"]?.objectValue ?? [:]
+        if settings["users"] != nil || settings["auth"] != nil {
+            throw XrayError.invalidInput(
+                "a SOCKS inbound already carries its own auth: drop XraySessionOptions.credentials or the document's own guard"
+            )
+        }
+        var guarded = settings
+        guarded["auth"] = .string("password")
+        guarded["users"] = .array([.object([
             "user": .string(credentials.username),
             "pass": .string(credentials.password),
         ])])
-        inbound["settings"] = .object(settings)
+        inbound["settings"] = .object(guarded)
     }
 
-    /// Returns the first outbound's tag, assigning `"proxy"` when it has
-    /// none. Returns nil when the document has no outbounds at all.
-    /// Resolves the `.proxy` destination to an outbound tag: the first
-    /// outbound that actually proxies. Conversion output usually leads
-    /// with `direct`, and routing the proxy there would bypass the
-    /// tunnel — so `freedom`, `blackhole`, and `dns` outbounds are
-    /// skipped. Falls back to the first outbound when nothing else
-    /// qualifies. An untagged winner is tagged `"proxy"` in place so
-    /// later stages agree on the name.
+    /// Returns the first outbound's tag, resolving `.proxy` past
+    /// non-proxies. Conversion output usually leads with `direct`, and
+    /// routing the proxy there would bypass the tunnel — so `freedom`,
+    /// `blackhole`, and `dns` outbounds are skipped. An entry without a
+    /// readable `protocol` is skipped rather than selected: matching the
+    /// old fallback there once mislabelled garbage as the proxy. Falls
+    /// back to the first outbound when nothing else qualifies; returns
+    /// nil when the document has no outbounds, or when the winner is
+    /// not an object at all. An untagged winner is tagged `"proxy"` in
+    /// place so later stages agree on the name.
     private static func ensureProxyTag(in config: inout XrayJSONObject) -> String? {
         guard case .array(var outbounds) = config["outbounds"], !outbounds.isEmpty else { return nil }
         let passthrough: Set<String> = ["freedom", "blackhole", "dns"]
         let index = outbounds.firstIndex { outbound in
             guard case .object(let entry) = outbound else { return false }
-            guard case .string(let proto) = entry["protocol"] else { return true }
+            guard case .string(let proto) = entry["protocol"] else { return false }
             return !passthrough.contains(proto)
         } ?? outbounds.startIndex
         guard case .object(var winner) = outbounds[index] else { return nil }
@@ -1067,18 +1411,20 @@ public final class XraySession: @unchecked Sendable {
         }
     }
 
-    /// Routes a `dokodemo-door` XrayDNS relay inbound at the engine's own
-    /// `dns` section: without an `inboundTag` → `dns-out` rule the
-    /// relay's queries fall through to `final` (or the proxy) instead
-    /// of the local resolver. Appends the rule when no rule already
-    /// claims the relay tag, and creates the routing section when the
-    /// document has none. Runs after the transform so transform-added
-    /// relays are covered; runs before the standard-outbound backfill
-    /// so a referenced `dns-out` always exists. An explicit route for
-    /// the tag always wins over this default.
+    /// Routes every `dokodemo-door` XrayDNS relay inbound at an
+    /// `inboundTag` → `dns-out` rule: without it the relay's queries
+    /// fall through to `final` (or the proxy) instead of the local
+    /// resolver. Appends the rule when no rule already claims the relay
+    /// tag, and creates the routing section when the document has none.
+    /// A `dns` section is deliberately not required — the relay
+    /// forwards to its own configured address either way, and the route
+    /// is about the relay's traffic, not the section. Runs after the
+    /// transform so transform-added relays are covered; runs before the
+    /// standard-outbound backfill so a referenced `dns-out` always
+    /// exists. An explicit route for the tag always wins over this
+    /// default.
     private static func ensureDNSRelayRoute(in config: inout XrayJSONObject) {
-        guard config["dns"] != nil,
-              case .array(let inbounds) = config["inbounds"] else { return }
+        guard case .array(let inbounds) = config["inbounds"] else { return }
         let relayTags = inbounds.compactMap { inbound -> String? in
             guard case .object(let entry) = inbound,
                   entry["protocol"]?.stringValue == "dokodemo-door",
@@ -1113,7 +1459,7 @@ public final class XraySession: @unchecked Sendable {
 
     private func log(_ message: String) {
         let sink: ((String) -> Void)? = stateLock.withLock {
-            _entries.append("\(Self.stamp.string(from: Date())) \(message)")
+            _entries.append(Self.stamped(message))
             if _entries.count > 200 {
                 _entries.removeFirst(_entries.count - 200)
             }
@@ -1186,7 +1532,11 @@ public final class XraySession: @unchecked Sendable {
         // `none`, `stdout`, and `stderr` are streams, not files: nothing
         // to tail, so they record as missing and `recentEngineLogs`
         // throws the "point at a file" guidance instead of a read error.
-        guard let value, !value.isEmpty, value != "none", value != "stdout", value != "stderr" else { return nil }
+        // Compared case-insensitively — the engine treats `STDERR` the
+        // same as `stderr`, so the filter must too.
+        guard let value, !value.isEmpty else { return nil }
+        let lowered = value.lowercased()
+        guard lowered != "none", lowered != "stdout", lowered != "stderr" else { return nil }
         return value
     }
 

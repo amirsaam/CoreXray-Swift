@@ -15,6 +15,16 @@ import Foundation
 /// When a new upstream capability has no typed wrapper yet,
 /// `sendRawRequest(_:)` is the escape hatch.
 ///
+/// Sessions multiply but the engine does not: you may hold an app-side
+/// session and a provider-side session (or several in tests), yet only
+/// one instance ever runs per process. Starting a second one replaces
+/// the first — every start calls `replaceRunningInstance()` first — so
+/// coordinate ownership in your app instead of assuming isolation. The
+/// same sharing applies to staleness guards: a timed-out start's
+/// background cleanup only stops what it launched, verified by a
+/// process-wide epoch, and concurrent use from several sessions is safe
+/// because the guards are per-launch, not per-session.
+///
 /// Layout: `Xray.swift` is only this declaration. Types live in `Kit/`,
 /// engine calls in `Calls/`, one type per file.
 public final class Xray: Sendable {

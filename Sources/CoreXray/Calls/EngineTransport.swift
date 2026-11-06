@@ -23,8 +23,12 @@ internal final class EngineTransport {
     /// Serializes every byte that crosses the C boundary. The engine is
     /// process-global, so all traffic shares one lane: no two calls
     /// interleave inside `CGoInvoke`, and callers need no locking of their
-    /// own. Do not call back into the engine from `transform` or `logger`
-    /// closures.
+    /// own. Every call here blocks its caller's thread while queued —
+    /// including long `ping` and launch calls — so never run a package
+    /// call on the main thread, and never call back into the engine from
+    /// `transform` or `logger` closures: the lane does not re-enter, and
+    /// a callback that calls in wedges its own thread until the outer
+    /// call returns.
     private static let lane = DispatchQueue(label: "CoreXray.engine", qos: .userInitiated)
 
     internal static func guardRequestSize(_ request: String) throws {
@@ -41,6 +45,16 @@ internal final class EngineTransport {
     /// not just a payload fragment. A missing engine answer throws
     /// `.bridgeFailed` outright instead of a fabricated failure envelope,
     /// so a dead bridge can never look like an engine verdict.
+    /// `CGoInvoke` takes a NUL-terminated copy of the UTF-8 bytes and the
+    /// answer comes back the same way (`String(cString:)`): a response
+    /// that is not valid UTF-8 traps at the boundary rather than
+    /// producing a mojibake string, and a bridge that returns an
+    /// unterminated pointer would over-read — both are engine-side
+    /// invariants this layer trusts, since every bundled binary has held
+    /// them. If `CGoInvoke` itself wedges, the lane wedges with it: every
+    /// later call queues behind it forever. `health()` detects this state
+    /// (bounded round-trip); recovery is a process restart, because only
+    /// the engine owns its stuck goroutine.
     internal static func rawCall(_ request: String) throws -> String {
         try guardRequestSize(request)
         return try lane.sync {
@@ -99,7 +113,11 @@ internal final class EngineTransport {
         _ envelope: Xray.EngineEnvelope<Payload>
     ) throws -> Payload {
         guard envelope.succeeded else {
-            throw XrayError.engineFailed(envelope.failure ?? "engine failure with no message")
+            // An empty message is not information: say the engine stayed
+            // silent instead of handing the caller an empty string to
+            // switch on.
+            let message = envelope.failure.flatMap { $0.isEmpty ? nil : $0 }
+            throw XrayError.engineFailed(message ?? "engine failure with no message")
         }
         guard let payload = envelope.payload else {
             throw XrayError.bridgeFailed("engine reported success but answered without a payload")
@@ -135,21 +153,23 @@ internal final class EngineTransport {
     }
 
     /// Serializes a JSON tree to compact text, keys sorted so two builds of
-    /// the same intent diff cleanly. `XrayJSONValue` is always encodable, so
-    /// failure here means programmer error, not bad input.
+    /// the same intent diff cleanly. `XrayJSONValue` is always encodable
+    /// when read from a document, but transform closures can inject
+    /// foreign values — either way the value never reached the engine,
+    /// so a failure here is `invalidInput`, not a bridge failure.
     internal static func serialize(_ value: XrayJSONValue) throws -> String {
         do {
             let encoder = JSONEncoder()
             encoder.outputFormatting = .sortedKeys
             let data = try encoder.encode(value)
             guard let text = String(data: data, encoding: .utf8) else {
-                throw XrayError.bridgeFailed("assembled JSON is not valid UTF-8")
+                throw XrayError.invalidInput("assembled JSON tree is not valid UTF-8")
             }
             return text
         } catch let error as XrayError {
             throw error
         } catch {
-            throw XrayError.bridgeFailed("JSON tree could not be serialized: \(error.localizedDescription)")
+            throw XrayError.invalidInput("assembled JSON tree could not be serialized (programmer error): \(error.localizedDescription)")
         }
     }
 }
@@ -185,8 +205,22 @@ extension Xray {
         }
     }
 
-    /// Stand-in payload for operations that only report success or failure.
-    internal struct EngineEnvelopeNoPayload: Decodable, Sendable {}
+    /// Stand-in payload for operations that only report success or
+    /// failure. Decodes tolerantly: a status operation's answer carries
+    /// a `data` shape the caller discards, and the Go side has answered
+    /// with missing, null, object, and scalar `data` across versions —
+    /// a scalar body is still a successful operation, not a broken
+    /// envelope, so anything decodes and `resolved` decides.
+    internal struct EngineEnvelopeNoPayload: Decodable, Sendable {
+        init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            _ = try? container.decode(XrayJSONValue.self, forKey: .data)
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case data
+        }
+    }
 
     /// Wraps a plain `xrayJson` string, the shape engine status operations
     /// and config round-trips read.

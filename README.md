@@ -214,7 +214,10 @@ try Xray.shared.proxyConfiguration(
     httpPort: nil,       // set to add an HTTP entry on 127.0.0.1
     routing: nil,        // the routing section; nil leaves conversion output alone
     dns: nil,            // verbatim dns section; nil leaves it out
-    log: nil             // verbatim log section; nil leaves it out
+    log: nil,            // verbatim log section; nil leaves it out
+    credentials: nil,   // guards the SOCKS entry; nil leaves it open
+    environment: nil,   // merged into the document's env
+    geoCheck: true      // fail when referenced geo files are missing
 )
 
 // Full control: tune the assembly, then assemble it.
@@ -223,6 +226,9 @@ assembly.socks = try Xray.shared.socksEntry(port: 10880)
 assembly.routing = Xray.shared.routing(rules: [...])
 assembly.metricsPort = 24242          // adds XrayMetrics listener + stats + policy
 assembly.observatory = try Xray.shared.observatory(subjectSelector: ["proxy"])
+assembly.environment = ["xray.location.asset": dir]  // merged into the document's env
+assembly.credentials = try Xray.shared.credentials(username: "u", password: "p")  // guards the SOCKS entry
+assembly.geoCheck = true  // fail assemble() when referenced geo files are missing (default)
 assembly.tun = try Xray.shared.tun(name: "utun7", fileDescriptor: fd)
 assembly.patch = { $0["log"] = ["loglevel": "warning"] }  // sees the final document: overrules everything above
 let config = try assembly.assemble()
@@ -232,7 +238,8 @@ How it works, in order: `source` converts (share links become outbounds;
 a single outbound object is wrapped as the outbounds; the first outbound
 is the `.proxy` destination everywhere else), verbatim
 sections (`dns`, `fakeDNS`, `log`, `routing`, `observatory` when set, metrics
-when `metricsPort` is set) are written, the
+when `metricsPort` is set, `env` merged from `environment`, SOCKS guards
+from `credentials` when set) are written, the
 tun inbound is appended when `tun` is set (with `xray.tun.fd` merged into
 `env` when it carries a descriptor), entries are appended, standards
 (`.direct` / `.block` /
@@ -323,9 +330,12 @@ one outbound object — never a full document, which goes through
 - `shareLinks()` goes back: one routable outbound, one share link,
   newline-separated. A document with no routable outbounds yields an empty
   string rather than an error.
-- `validate()` checks a configuration without starting anything; the thrown
-  error carries the engine's parser complaint, which is the cheapest way to
-  reject bad user input. It needs the engine stopped — while running, use
+- `validate()` checks a configuration without starting anything, and runs
+  the same geo-asset gate the launch path runs: a `geosite:`/`geoip:`/`ext:`
+  reference whose file is missing or unreadable fails here, not at launch.
+  The thrown error carries the engine's parser complaint or the gate's
+  `.geoAssets` report, which is the cheapest way to reject bad user input.
+  It needs the engine stopped — while running, use
   `validateOffline()`, which checks section names, outbound references, and
   tag/protocol presence without touching the engine.
 - `decodeSubscription` (on `Xray.shared`) unwraps a provider's Age-encrypted
@@ -656,7 +666,7 @@ Xray.shared.ping(_ targets: [XrayPingTarget], options: XrayPingOptions? = nil) t
 Xray.shared.decodeSubscription(_ text: String, ageSecret: String? = nil) throws -> String
 Xray.shared.generateAgeKeyPair(kind: .x25519) throws -> XrayAgeKeyPair
 Xray.shared.writeGeoInventory(database: String, kind: XrayGeoDatabase, in: URL) throws -> URL
-Xray.shared.proxyConfiguration(_ source: XrayAssemblySource, remarks: String? = nil, socksPort: Int? = 10808, httpPort: Int? = nil, routing: XrayRouting? = nil, dns: XrayDNS? = nil, log: XrayLog? = nil) throws -> XrayConfig
+Xray.shared.proxyConfiguration(_ source: XrayAssemblySource, remarks: String? = nil, socksPort: Int? = 10808, httpPort: Int? = nil, routing: XrayRouting? = nil, dns: XrayDNS? = nil, log: XrayLog? = nil, credentials: XrayCredentials? = nil, environment: [String: String]? = nil, geoCheck: Bool = true) throws -> XrayConfig
 ```
 
 - `version()` answers, for example, "26.10.29", the Xray-core build compiled
@@ -719,7 +729,7 @@ Xray.shared.options(sniffing:transform:routing:credentials:tun:environment:obser
 Xray.shared.metrics(tag:port:) throws -> XrayMetrics
 Xray.shared.observatory(subjectSelector:probeURL:probeInterval:enableConcurrency:) throws -> XrayObservatory
 Xray.shared.trafficMonitor(port:host:timeoutSeconds:) throws -> XrayTrafficMonitor
-Xray.shared.trafficWatchdog(port:host:interval:stalledAfter:onStall:) throws -> XrayTrafficWatchdog
+Xray.shared.trafficWatchdog(port:host:interval:stalledAfter:timeoutSeconds:onStall:) throws -> XrayTrafficWatchdog
 Xray.shared.pingTarget(config:outboundTag:) -> XrayPingTarget
 Xray.shared.pingOptions(timeoutSeconds:testURL:) throws -> XrayPingOptions
 Xray.shared.geoDownloader(geoIPURL:geoSiteURL:) -> XrayGeoDownloader
@@ -884,7 +894,9 @@ watchdog.stop()
 ```
 
 `interval` is the poll cadence, `stalledAfter` the silence that counts as a
-stall. The fire is latched — one call per episode, reset by any movement —
+stall, and `timeoutSeconds` the per-poll HTTP budget (default 5s; reject an
+interval under 10ms or a window shorter than the interval — a runaway-tight
+cadence is a bug, not a policy). The fire is latched — one call per episode, reset by any movement —
 and failed snapshots count as stalls, so a dead metrics endpoint fires too
 instead of reading as eternal calm. An idle tunnel reads as stalled, so
 start the watchdog after first traffic or set the window generously.
