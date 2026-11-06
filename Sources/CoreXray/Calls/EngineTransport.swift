@@ -66,10 +66,12 @@ internal final class EngineTransport {
         do {
             data = try JSONEncoder().encode(payload)
         } catch {
-            throw XrayError.bridgeFailed("payload could not be encoded: \(error.localizedDescription)")
+            // Programmer error on our side, not a bridge failure: the
+            // payload never reached the engine.
+            throw XrayError.invalidInput("request payload could not be encoded: \(error.localizedDescription)")
         }
         guard let text = String(data: data, encoding: .utf8) else {
-            throw XrayError.bridgeFailed("payload could not be encoded as UTF-8 JSON")
+            throw XrayError.invalidInput("request payload could not be encoded as UTF-8 JSON")
         }
         return try rawCall("""
         {"apiVersion":\(protocolVersion),"method":"\(method.rawValue)","payload":\(text)}
@@ -155,7 +157,7 @@ internal final class EngineTransport {
 extension Xray {
     /// The operations the engine understands, keyed by the strings its Go
     /// side dispatches on.
-    internal enum Method: String {
+    internal enum Method: String, Sendable {
         case sparePorts = "getFreePorts"
         case decodeSubscription = "decodeSubscriptionText"
         case configFromShareLinks = "convertShareLinksToXrayJson"
@@ -171,7 +173,7 @@ extension Xray {
     }
 
     /// Envelope every engine answer arrives in.
-    internal struct EngineEnvelope<Payload: Decodable>: Decodable {
+    internal struct EngineEnvelope<Payload: Decodable>: Decodable, Sendable where Payload: Sendable {
         let succeeded: Bool
         let payload: Payload?
         let failure: String?
@@ -184,11 +186,11 @@ extension Xray {
     }
 
     /// Stand-in payload for operations that only report success or failure.
-    internal struct EngineEnvelopeNoPayload: Decodable {}
+    internal struct EngineEnvelopeNoPayload: Decodable, Sendable {}
 
     /// Wraps a plain `xrayJson` string, the shape engine status operations
     /// and config round-trips read.
-    internal struct ConfigPayload: Encodable {
+    internal struct ConfigPayload: Encodable, Sendable {
         let xrayJson: String
     }
 }

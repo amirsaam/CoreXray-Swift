@@ -16,12 +16,17 @@ internal final class GeoCalls {
             .catalogGeoData,
             payload: Xray.GeoCatalogRequest(directory: directory.path, name: database, kind: kind)
         )
-        return directory.appendingPathComponent("\(database).json")
+        // Success alone is not proof: only hand back a path that exists.
+        let url = directory.appendingPathComponent("\(database).json")
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw XrayError.bridgeFailed("the engine reported success but no inventory file appeared at \(url.path)")
+        }
+        return url
     }
 }
 
 extension Xray {
-    internal struct GeoCatalogRequest: Encodable {
+    internal struct GeoCatalogRequest: Encodable, Sendable {
         let directory: String
         let name: String
         let kind: XrayGeoDatabase

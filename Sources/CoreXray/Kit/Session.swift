@@ -276,7 +276,7 @@ public final class XraySession: @unchecked Sendable {
         }
         if let routing = options.routing {
             if routing.rules.contains(where: { $0.isIneffective }) {
-                throw XrayError.invalidInput("routing contains a rule with no conditions and no destination: the engine rejects empty rules — give it domains, ips, a port, or a destination")
+                throw XrayError.invalidInput("routing contains a rule that selects nothing: the engine rejects rules with no traffic fields — give it domains, ips, a port, protocols, or inbound tags (a destination alone matches no traffic)")
             }
             let proxyTag: String
             if routing.needsProxy {
@@ -349,8 +349,12 @@ public final class XraySession: @unchecked Sendable {
         if generation == currentGeneration() {
             if let dict { recordLogPaths(from: dict) }
             markLaunched()
+            log("engine launched")
+        } else {
+            // Superseded mid-launch by a newer start: the engine may be
+            // up, but the stamps belong to the winner, not to us.
+            log("engine launch superseded by a newer start; stamps skipped")
         }
-        log("engine launched")
     }
 
     /// Launches JSON text exactly as given: no conversion, no sniffing,
@@ -368,8 +372,10 @@ public final class XraySession: @unchecked Sendable {
         if generation == currentGeneration() {
             if let dict { recordLogPaths(from: dict) }
             markLaunched()
+            log("engine launched")
+        } else {
+            log("engine launch superseded by a newer start; stamps skipped")
         }
-        log("engine launched")
     }
 
     /// Reads a JSON file and launches it exactly as written.
@@ -401,7 +407,18 @@ public final class XraySession: @unchecked Sendable {
     public func stop() throws {
         _ = nextGeneration()
         log("stopping engine")
-        try LifecycleCalls.stop()
+        do {
+            try LifecycleCalls.stop()
+        } catch {
+            // The engine state is uncertain now, but an uptime anchor
+            // pointing at a possibly-dead engine is the worse lie: it
+            // claims health and suppresses reconnects. Clear the stamp
+            // (log paths survive for forensics) and rethrow, so the
+            // caller knows the instance may still be running.
+            markStopped()
+            log("engine stop failed: \(error)")
+            throw error
+        }
         markStopped()
         log("engine stopped")
     }
@@ -445,9 +462,11 @@ public final class XraySession: @unchecked Sendable {
     /// and never unsets, so a descriptor left by an earlier TUN session
     /// would hijack this launch into reading a dead fd. Runs at launch,
     /// never at build — inspecting a document must not touch process
-    /// state. A descriptor the document itself carries (or one the
-    /// caller set in the process deliberately) is left alone: only a
-    /// TUN inbound with neither may inherit a stale one.
+    /// state. Swift never installs these variables itself, so anything
+    /// found in the process is engine residue by definition: the
+    /// document is the only carrier the launch honors, and a process
+    /// value with no document counterpart is always cleared, never
+    /// inherited.
     private func clearStaleTunDescriptorIfNeeded(for dict: XrayJSONObject) {
         guard case .array(let inbounds) = dict["inbounds"],
               inbounds.contains(where: { $0.objectValue?["protocol"]?.stringValue == "tun" }) else { return }
@@ -489,7 +508,19 @@ public final class XraySession: @unchecked Sendable {
     /// stopped first. Safe to call idle — the stop is skipped when
     /// nothing runs.
     private func replaceRunningInstance() throws {
-        if (try? LifecycleCalls.isRunning()) == true {
+        let running: Bool
+        do {
+            running = try LifecycleCalls.isRunning()
+        } catch {
+            // Never launch blind silently: if the probe itself failed,
+            // say so in the flight log. The launch still proceeds — a
+            // live engine answers the launch with a refusal the caller
+            // can act on (stop, then retry), which beats deadlocking
+            // every start on a broken probe.
+            log("engine state probe failed (\(error)); launching without knowing whether an instance runs")
+            return
+        }
+        if running {
             try stop()
         }
     }
@@ -511,12 +542,26 @@ public final class XraySession: @unchecked Sendable {
         if let dict { clearStaleTunDescriptorIfNeeded(for: dict) }
         log("launching engine (\(config.json.count) bytes of configuration)")
         let json = config.json
-        try await Task.detached { try LifecycleCalls.launch(json) }.value
+        do {
+            try await Task.detached { try LifecycleCalls.launch(json) }.value
+        } catch is CancellationError {
+            // The detached launch doesn't inherit cancellation, so it
+            // may still be settling: park a generation-guarded cleanup
+            // so the orphan never outlives the attempt that spawned it.
+            // A launch that already failed needs no cleanup — the guard
+            // stands down on its own — so only cancellation reaps.
+            Task.detached { [weak self] in
+                self?.stopIfCurrent(generation: generation)
+            }
+            throw CancellationError()
+        }
         if generation == currentGeneration() {
             if let dict { recordLogPaths(from: dict) }
             markLaunched()
+            log("engine launched")
+        } else {
+            log("engine launch superseded by a newer start; stamps skipped")
         }
-        log("engine launched")
     }
 
     /// Starts a source like `start(_:options:)`, but gives up if the
@@ -594,8 +639,10 @@ public final class XraySession: @unchecked Sendable {
         if generation == currentGeneration() {
             if let dict { recordLogPaths(from: dict) }
             markLaunched()
+            log("engine launched")
+        } else {
+            log("engine launch superseded by a newer start; stamps skipped")
         }
-        log("engine launched")
     }
 
     /// Assembles on the caller, then validates the result without
@@ -652,16 +699,35 @@ public final class XraySession: @unchecked Sendable {
                 let tag = entry["tag"]?.stringValue ?? "?"
                 if entry["protocol"]?.stringValue == "tun" {
                     sawTun = true
-                    // The descriptor travels through the document env
-                    // (see `XrayTunEntry`), but the engine also reads the
-                    // process env — a descriptor the caller already holds
-                    // counts too. Without either, the engine has no
-                    // interface to read packets from.
-                    if let env = object["env"]?.objectValue,
-                       env["xray.tun.fd"] != nil || env["XRAY_TUN_FD"] != nil {
-                        sawTunFD = true
-                    } else if getenv("xray.tun.fd") != nil || getenv("XRAY_TUN_FD") != nil {
-                        sawTunFD = true
+                    // The document env is the only carrier the launch
+                    // honors: it clears the process variables first (the
+                    // engine never unsets what an earlier start left),
+                    // so a descriptor sitting only in the process would
+                    // be wiped before the engine reads it. Without a
+                    // document descriptor, the engine has no interface
+                    // to read packets from. Empty strings count as
+                    // missing on both sides.
+                    if let env = object["env"]?.objectValue {
+                        let docFDs = [env["xray.tun.fd"]?.stringValue, env["XRAY_TUN_FD"]?.stringValue]
+                        if docFDs.contains(where: { !($0 ?? "").isEmpty }) {
+                            sawTunFD = true
+                        }
+                    }
+                    if !sawTunFD {
+                        let processFDs = ["xray.tun.fd", "XRAY_TUN_FD"].compactMap { name -> String? in
+                            guard let raw = getenv(name) else { return nil }
+                            return String(cString: raw)
+                        }
+                        if processFDs.contains(where: { !$0.isEmpty }) {
+                            // Seen, but not usable: the launch clears the
+                            // process variables, so only the document counts.
+                            // Mark it seen to keep the generic missing-fd
+                            // message below from doubling this one.
+                            sawTunFD = true
+                            problems.append(
+                                "the tun descriptor lives only in the process environment, which the launch clears: move it into XraySessionOptions.environment (xray.tun.fd) or tun(fileDescriptor:)"
+                            )
+                        }
                     }
                 }
                 guard let listen = entry["listen"]?.stringValue else {
@@ -715,21 +781,34 @@ public final class XraySession: @unchecked Sendable {
         do {
             var request = URLRequest(url: url)
             request.timeoutInterval = timeoutSeconds
-            let (data, response) = try await urlSession.data(for: request)
+            // Stream, don't buffer: `data(for:)` would park an entire
+            // hostile body in memory before the cap below ever runs.
+            // The cap is enforced per byte, so an unknown or lying
+            // length can only cost the cap, never the machine.
+            let cap = EngineTransport.maxRequestBytes
+            let (bytes, response) = try await urlSession.bytes(for: request)
             if let http = response as? HTTPURLResponse {
                 guard http.statusCode == 200 else {
                     throw XrayError.bridgeFailed("subscription fetch returned HTTP \(http.statusCode)")
                 }
-                if http.expectedContentLength > Int64(EngineTransport.maxRequestBytes) {
+                if http.expectedContentLength > Int64(cap) {
                     throw XrayError.invalidInput(
-                        "subscription feed declares \(http.expectedContentLength) bytes, past the \(EngineTransport.maxRequestBytes)-byte cap"
+                        "subscription feed declares \(http.expectedContentLength) bytes, past the \(cap)-byte cap"
                     )
                 }
             }
-            guard data.count <= EngineTransport.maxRequestBytes else {
-                throw XrayError.invalidInput(
-                    "subscription feed is \(data.count) bytes, past the \(EngineTransport.maxRequestBytes)-byte cap"
-                )
+            var data = Data()
+            if let expected = (response as? HTTPURLResponse)?.expectedContentLength,
+               expected > 0, expected < Int64(cap) {
+                data.reserveCapacity(Int(expected))
+            }
+            for try await byte in bytes {
+                data.append(byte)
+                guard data.count <= cap else {
+                    throw XrayError.invalidInput(
+                        "subscription feed exceeds the \(cap)-byte cap"
+                    )
+                }
             }
             guard let decoded = String(data: data, encoding: .utf8), !decoded.isEmpty else {
                 throw XrayError.invalidInput("subscription at \(url) is empty or not text")
@@ -743,13 +822,23 @@ public final class XraySession: @unchecked Sendable {
             if error is CancellationError || (error as NSError).code == NSURLErrorCancelled {
                 throw CancellationError()
             }
+            // A timeout is a timeout: report it as one so the caller
+            // retries with a longer budget instead of debugging a
+            // document that was never even fetched.
+            if (error as NSError).code == NSURLErrorTimedOut {
+                throw XrayError.timedOut("subscription fetch exceeded its \(timeoutSeconds)s budget")
+            }
             throw XrayError.bridgeFailed("could not fetch subscription: \(error.localizedDescription)")
         }
         let unwrapped = try Xray.shared.decodeSubscription(text, ageSecret: ageSecret)
         var resolved = options ?? Xray.shared.options()
         if let assetDirectory {
             var env = resolved.environment ?? [:]
-            if env["xray.location.asset"] == nil {
+            // Either spelling counts: the engine reads the dotted name
+            // first and the underscore one second, so a caller-set
+            // `XRAY_LOCATION_ASSET` already answers the lookup and must
+            // not be overridden.
+            if env["xray.location.asset"] == nil && env["XRAY_LOCATION_ASSET"] == nil {
                 env["xray.location.asset"] = assetDirectory.path
             }
             resolved.environment = env
@@ -760,6 +849,16 @@ public final class XraySession: @unchecked Sendable {
             let needed = Self.referencedDatabases(sourceText: unwrapped, options: resolved)
             if !needed.isEmpty {
                 _ = try await Xray.shared.ensureAssets(for: nil, databases: needed, in: assetDirectory)
+            }
+            // External files have no downloader behind them: fail here,
+            // naming the file and where it must be placed, instead of
+            // launching into the gate's refusal a moment later.
+            let external = Self.referencedExternalFiles(sourceText: unwrapped, options: resolved)
+            if !external.isEmpty {
+                let docEnv: XrayJSONObject? = resolved.environment.map { env in
+                    Dictionary(uniqueKeysWithValues: env.map { ($0.key, XrayJSONValue.string($0.value)) })
+                }
+                try XrayGeoAssets.check(externalFiles: external, env: docEnv)
             }
         }
         try await start(.shareLinks(unwrapped), options: resolved, deadline: deadline)
@@ -814,6 +913,40 @@ public final class XraySession: @unchecked Sendable {
             return database
         }
         return nil
+    }
+
+    /// External data files a remote launch will need: the same scan as
+    /// `referencedDatabases`, but for `ext:` filenames, which no
+    /// downloader can fetch — the top-up checks them for existence
+    /// instead of downloading them.
+    private static func referencedExternalFiles(sourceText: String, options: XraySessionOptions) -> [String] {
+        var files: Set<String> = []
+        if let data = sourceText.data(using: .utf8),
+           let decoded = try? JSONDecoder().decode(XrayJSONValue.self, from: data),
+           case .object(let dict) = decoded {
+            files.formUnion(XrayGeoAssets.referencedExternalFiles(in: dict))
+        }
+        var candidates: [String] = []
+        if let routing = options.routing {
+            for rule in routing.rules {
+                candidates += rule.domains
+                candidates += rule.ips
+            }
+        }
+        if let dns = options.dns {
+            candidates += dns.hosts.keys
+            for server in dns.servers {
+                if case .detailed(_, let domains) = server {
+                    candidates += domains
+                }
+            }
+        }
+        for text in candidates where text.hasPrefix("ext:") {
+            if let file = XrayGeoAssets.externalFile(named: text) {
+                files.insert(file)
+            }
+        }
+        return files.sorted()
     }
 
     /// Fail-fast geo database check over the final, post-transform

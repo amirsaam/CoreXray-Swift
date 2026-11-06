@@ -244,21 +244,21 @@ public struct XrayTrafficDelta: Sendable {
     }
 
     public var upPerSecond: Double {
-        seconds > 0 ? Double(totalUp) / seconds : 0
+        seconds > 0 ? max(0, Double(totalUp) / seconds) : 0
     }
 
     public var downPerSecond: Double {
-        seconds > 0 ? Double(totalDown) / seconds : 0
+        seconds > 0 ? max(0, Double(totalDown) / seconds) : 0
     }
 
     /// Outbound-side upload speed; prefer this for dashboards.
     public var uplinkPerSecond: Double {
-        seconds > 0 ? Double(uplink) / seconds : 0
+        seconds > 0 ? max(0, Double(uplink) / seconds) : 0
     }
 
     /// Outbound-side download speed; prefer this for dashboards.
     public var downlinkPerSecond: Double {
-        seconds > 0 ? Double(downlink) / seconds : 0
+        seconds > 0 ? max(0, Double(downlink) / seconds) : 0
     }
 }
 
@@ -293,6 +293,13 @@ public struct XrayTrafficMonitor: Sendable {
         guard (1 ... 65_535).contains(port) else {
             throw XrayError.invalidInput("metrics port \(port) is outside 1...65535")
         }
+        // Reject host:port shapes before bracketing confuses them with
+        // an IPv6 literal: the port belongs in `port`, not in `host`.
+        let parts = host.split(separator: ":", omittingEmptySubsequences: false)
+        if (host.hasPrefix("[") && host.contains("]:")) ||
+            (!host.hasPrefix("[") && host.contains(":") && parts.count == 2 && parts.last?.allSatisfy(\.isNumber) == true) {
+            throw XrayError.invalidInput("metrics host \(host) includes a port: pass the bare host and put the port in `port`")
+        }
         // Bracket bare IPv6 literals, or the port after the final colon
         // reads as part of the address and URL formation fails.
         let hostPart = host.contains(":") && !host.hasPrefix("[") ? "[\(host)]" : host
@@ -305,6 +312,10 @@ public struct XrayTrafficMonitor: Sendable {
         let response: URLResponse
         do {
             (data, response) = try await URLSession.shared.data(for: request)
+        } catch is CancellationError {
+            // A cancelled poll loop must stay cancellable: don't wrap
+            // cooperative cancellation as a bridge failure.
+            throw CancellationError()
         } catch {
             throw XrayError.bridgeFailed("metrics request to \(host):\(port) failed: \(error.localizedDescription)")
         }
@@ -339,7 +350,7 @@ public struct XrayTrafficMonitor: Sendable {
 /// traffic or set `stalledAfter` generously. `onStall` runs on the
 /// watchdog's task — hop to your queue inside it. Create, `start`, and
 /// `stop` from one serial context.
-public final class XrayTrafficWatchdog {
+public final class XrayTrafficWatchdog: @unchecked Sendable {
     private let monitor: XrayTrafficMonitor
     private let interval: Duration
     private let stalledAfter: Duration
@@ -368,6 +379,16 @@ public final class XrayTrafficWatchdog {
         guard stalledAfter > .zero else {
             throw XrayError.invalidInput("traffic watchdog stalledAfter must be positive")
         }
+        guard !host.isEmpty else {
+            throw XrayError.invalidInput("traffic watchdog host must not be empty")
+        }
+        // Same shape rule as `snapshot()`: a `host:port` here would
+        // otherwise fail every poll and read as a permanent stall.
+        let parts = host.split(separator: ":", omittingEmptySubsequences: false)
+        if (host.hasPrefix("[") && host.contains("]:")) ||
+            (!host.hasPrefix("[") && host.contains(":") && parts.count == 2 && parts.last?.allSatisfy(\.isNumber) == true) {
+            throw XrayError.invalidInput("traffic watchdog host \(host) includes a port: pass the bare host and put the port in `port`")
+        }
         self.monitor = XrayTrafficMonitor(port: port, host: host)
         self.interval = interval
         self.stalledAfter = stalledAfter
@@ -380,7 +401,9 @@ public final class XrayTrafficWatchdog {
 
     /// Begins polling. Restartable: starting again stops the old loop,
     /// and the old loop exits at its next check via the epoch — the two
-    /// never poll or fire together.
+    /// never fire together. Polls can briefly overlap (`stop` cannot
+    /// abort an in-flight HTTP read), so keep `onStall` idempotent: the
+    /// epoch guarantees at most one fire per stall episode.
     public func start() {
         lock.withLock {
             task?.cancel()
@@ -415,13 +438,20 @@ public final class XrayTrafficWatchdog {
             // start the watchdog after one manual `snapshot()` or set
             // `stalledAfter` generously.
             if let now = try? await monitor.snapshot() {
-                // Any movement counts: growth is traffic, a drop is an
-                // engine restart resetting its counters — fresh traffic,
-                // not a stall. Only exactly-equal totals mean silence.
-                if let previous = last,
-                   now.totalUp &+ now.totalDown != previous.totalUp &+ previous.totalDown {
+                if let previous = last {
+                    // Any movement counts: growth is traffic, a drop is an
+                    // engine restart resetting its counters — fresh traffic,
+                    // not a stall. Only exactly-equal totals mean silence.
+                    if now.totalUp &+ now.totalDown != previous.totalUp &+ previous.totalDown {
+                        lastAdvance = ContinuousClock.now
+                        fired = false
+                    }
+                } else {
+                    // First successful reading: the stall clock starts at
+                    // first data, not at start(). A metrics endpoint that
+                    // is still coming up must not read as a stall before
+                    // it ever answered.
                     lastAdvance = ContinuousClock.now
-                    fired = false
                 }
                 last = now
             }
@@ -464,11 +494,24 @@ private struct VarsStats: Decodable {
 }
 
 private struct VarsCounter: Decodable {
-    var uplink: Int64?
-    var downlink: Int64?
+    var uplink: Int64
+    var downlink: Int64
 
     var counter: XrayTrafficCounter {
-        XrayTrafficCounter(up: uplink ?? 0, down: downlink ?? 0)
+        XrayTrafficCounter(up: uplink, down: downlink)
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case uplink, downlink
+    }
+
+    init(from decoder: any Decoder) throws {
+        // Clamp, don't fail: one counter past Int64.max (or briefly a
+        // non-number mid-rotation) must not kill the whole snapshot —
+        // every other tag still reports. Absent stays zero as before.
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        uplink = (try? container.decodeIfPresent(Int64.self, forKey: .uplink)) ?? 0
+        downlink = (try? container.decodeIfPresent(Int64.self, forKey: .downlink)) ?? 0
     }
 }
 

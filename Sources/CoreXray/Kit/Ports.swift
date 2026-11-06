@@ -15,6 +15,12 @@ extension Xray {
         guard count > 0 else {
             throw XrayError.invalidInput("findAvailablePorts needs a count of at least 1")
         }
+        guard count <= 1024 else {
+            throw XrayError.invalidInput("findAvailablePorts needs a count of at most 1024; request fewer at a time")
+        }
+        guard excluding.allSatisfy({ (1 ... 65_535).contains($0) }) else {
+            throw XrayError.invalidInput("findAvailablePorts excluding holds ports outside 1...65535")
+        }
         return try PortCalls.spare(count: count, excluding: excluding)
     }
 
@@ -27,6 +33,12 @@ extension Xray {
     public func verifyAvailablePorts(count: Int = 1, excluding: [Int] = []) throws -> [Int] {
         guard count > 0 else {
             throw XrayError.invalidInput("verifyAvailablePorts needs a count of at least 1")
+        }
+        guard count <= 1024 else {
+            throw XrayError.invalidInput("verifyAvailablePorts needs a count of at most 1024; request fewer at a time")
+        }
+        guard excluding.allSatisfy({ (1 ... 65_535).contains($0) }) else {
+            throw XrayError.invalidInput("verifyAvailablePorts excluding holds ports outside 1...65535")
         }
         return try PortCalls.verify(count: count, excluding: excluding)
     }

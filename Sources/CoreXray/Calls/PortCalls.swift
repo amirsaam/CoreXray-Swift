@@ -50,7 +50,11 @@ internal final class PortCalls {
         guard descriptor >= 0 else { return false }
         defer { close(descriptor) }
         var address = sockaddr_in()
+        // `sin_len` exists only on Darwin; the Glibc layout has no such
+        // field, so setting it must stay Apple-only.
+        #if canImport(Darwin)
         address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        #endif
         address.sin_family = sa_family_t(AF_INET)
         address.sin_port = in_port_t(port).bigEndian
         address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
@@ -63,7 +67,7 @@ internal final class PortCalls {
 }
 
 extension Xray {
-    internal struct PortRequest: Encodable {
+    internal struct PortRequest: Encodable, Sendable {
         let count: Int
         let excluding: [Int]?
 
@@ -73,7 +77,7 @@ extension Xray {
         }
     }
 
-    internal struct PortList: Decodable {
+    internal struct PortList: Decodable, Sendable {
         let ports: [Int]
     }
 }

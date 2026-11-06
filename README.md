@@ -224,7 +224,7 @@ assembly.routing = Xray.shared.routing(rules: [...])
 assembly.metricsPort = 24242          // adds XrayMetrics listener + stats + policy
 assembly.observatory = try Xray.shared.observatory(subjectSelector: ["proxy"])
 assembly.tun = try Xray.shared.tun(name: "utun7", fileDescriptor: fd)
-assembly.patch = { $0["log"] = ["loglevel": "warning"] }  // runs last
+assembly.patch = { $0["log"] = ["loglevel": "warning"] }  // sees the final document: overrules everything above
 let config = try assembly.assemble()
 ```
 
@@ -255,7 +255,8 @@ Three promises hold for every assembly:
   way to lose the real server, so don't put one there.
 - Destinations are logical, not tags: `.proxy` resolves to the converted
   outbound's real tag (assigned `"proxy"` if it had none), `.direct` /
-  `.block` / `.dnsOut` resolve to standard outbounds added automatically when
+  `.block` / `.dnsOut` (which routes to the engine's own `dns-out` outbound)
+  resolve to standard outbounds added automatically when
   referenced but missing, and `.custom("tag")` passes a tag through verbatim
   for outbounds you provide yourself. Sending traffic to `.proxy` when the
   document has no outbounds is an `.invalidInput` error.
@@ -459,9 +460,12 @@ Notes on the pieces:
   already define one. Fields: `destOverride` (default
   `["http", "tls", "quic", "fakedns"]`), `enabled` (default true),
   `routeOnly` (default false), `domainsExcluded` (default empty),
-  `metadataOnly` (default false). Inbounds with their own settings keep them.
-- `transform` mutates the parsed configuration in place and runs last, so it
-  overrules everything, including sniffing and routing. It works on a typed
+  `metadataOnly` (default false), plus `probeURL` (default nil: snippet
+  probing only) and `enableConcurrency` (default nil: engine default).
+  Inbounds with their own settings keep them.
+- `transform` mutates the parsed configuration in place and (like
+  `assembly.patch`, which holds the same last position) overrules
+  everything, including sniffing and routing. It works on a typed
   tree (`XrayJSONObject`, values are `XrayJSONValue`), so there is nothing
   to cast: literals build documents, subscripts and dynamic members read them.
   ```swift
@@ -677,7 +681,7 @@ Xray.shared.proxyConfiguration(_ source: XrayAssemblySource, remarks: String? = 
 - `decodeSubscription` unwraps a provider's Age-encrypted subscription
   export: text starting with the Age armor header is decrypted with
   `ageSecret`, and *any other text comes back unchanged*. It does not parse
-  links and does not base64-decode — that is `XrayConfig(shareLinks:)`'s job,
+  links and does not base64-decode — that is `configuration(.shareLinks:)`'s job,
   which takes a single link, many newline-separated links, a base64 blob,
   or this function's output. Pass the
   `AGE-SECRET-KEY-...` string as `ageSecret` for encrypted exports.
@@ -808,7 +812,10 @@ and verify it the way you'd guard SOCKS.
 
 `snapshot()` returns a `XrayTrafficSnapshot`: per-tag `inbound`/`outbound`
 dictionaries of `XrayTrafficCounter` (`up`, `down`, `total`), plus summed
-`totalUp`/`totalDown`. The engine counts every byte twice — once on the
+`totalUp`/`totalDown`. A single corrupt counter (past `Int64.max`,
+mid-rotation garbage) clamps to zero instead of failing the whole
+snapshot — every other tag still reports. The engine counts every byte
+twice — once on the
 inbound it entered through, once on the outbound it left through — so the
 totals are 2x the bytes on the wire. Dashboards want the outbound side:
 `uplink`/`downlink` (and their `XrayTrafficDelta` twins, with
@@ -817,8 +824,13 @@ diffs two snapshots into a `XrayTrafficDelta` — per-tag bytes moved in the
 interval, totals, and `upPerSecond`/`downPerSecond` derived from the
 wall-clock gap, so polling once a second reads as live speed. If the engine
 restarted between snapshots, the whole later reading counts as new traffic
-rather than going negative. Unreachable endpoints and non-200 answers throw
-`.bridgeFailed`; poll failures in your loop should keep the last good values
+rather than going negative. `trafficMonitor` takes `host` (default
+`127.0.0.1`; a bare IPv6 literal is bracketed for you, a `host:port` shape
+is rejected so the port can't hide in two places) and `timeoutSeconds`
+(default 5). Unreachable endpoints and non-200 answers throw
+`.bridgeFailed` — except a cancelled poll loop, which rethrows
+`CancellationError` so `Task` cancellation keeps working; poll failures
+in your loop should keep the last good values
 and retry, the same way you'd treat any sampled signal. (`/debug/vars` also
 exposes the engine's own `pprof` block — same endpoint, not parsed here.)
 
@@ -891,8 +903,13 @@ traffic time, so a missing file turns into silent dead routing — `validate()`
 passes, real requests just fail. Every `session.build` / `validate` / `start`
 therefore checks that the databases the routing *and* dns sections reference
 exist and parse where the engine will look: the document's
-`env["xray.location.asset"]` first (set it via `XraySessionOptions.environment`), then
-the process environment, then the executable's directory. A missing, empty,
+`env` first (dotted `xray.location.asset`, then `XRAY_LOCATION_ASSET` — set
+either via `XraySessionOptions.environment`), then the process environment
+under the same spellings, then the engine's fixed fallbacks
+(`/usr/local/share/xray`, `/usr/share/xray`, `/opt/share/xray`), and the
+executable's directory only when no location is set anywhere (this mirrors
+`GetAssetLocation` in Xray-core's `common/platform`, verified at
+v26.10.31). A missing, empty,
 or garbage file throws `.geoAssets`, naming the database and every directory
 searched. Plain domains and CIDRs never trigger the check, and
 `XraySessionOptions.geoCheck: false` turns it off entirely for documents you verify
@@ -919,7 +936,8 @@ the instance as read-only. `XrayGeoDownloader.defaultGeoIPURL` and
 `.defaultGeoSiteURL` expose the bundled defaults;
 `XrayGeoDatabase.geosite` / `.geoip` name which database a call is about.
 Underneath, `XrayGeoAssets` is the gate itself: it finds the candidate
-directories (document `env`, process environment, executable folder),
+directories (document `env`, process environment, the engine's fixed
+fallbacks, executable folder as a last resort),
 verifies each referenced `.dat` by its protobuf framing, and throws
 `.geoAssets` naming the missing, corrupt, or unreadable file.
 

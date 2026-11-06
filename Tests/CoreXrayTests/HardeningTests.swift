@@ -110,7 +110,7 @@ final class HardeningTests: XCTestCase {
             guard case XrayError.invalidInput(let message) = error else {
                 return XCTFail("expected .invalidInput, got \(error)")
             }
-            XCTAssertTrue(message.contains("no conditions"), "got: \(message)")
+            XCTAssertTrue(message.contains("selects nothing"), "got: \(message)")
         }
     }
 
@@ -257,7 +257,7 @@ final class HardeningTests: XCTestCase {
 
     // MARK: - Preflight process-env descriptor
 
-    func testPreflightAcceptsProcessEnvDescriptor() throws {
+    func testPreflightRejectsProcessEnvOnlyDescriptor() throws {
         setenv("xray.tun.fd", "5", 1)
         defer { unsetenv("xray.tun.fd") }
         let tun = try shared.tun(listen: "127.0.0.1")
@@ -265,9 +265,9 @@ final class HardeningTests: XCTestCase {
             .json(minimalJSON), options: shared.options(tun: tun)
         )
         let problems = try shared.newSession().preflightIssues(.json(config.json))
-        XCTAssertFalse(
-            problems.contains(where: { $0.contains("file descriptor") }),
-            "process-env descriptor must satisfy preflight, got: \(problems)"
+        XCTAssertTrue(
+            problems.contains(where: { $0.contains("only in the process environment") }),
+            "a process-only descriptor must be flagged for moving into the document, got: \(problems)"
         )
     }
 
@@ -284,14 +284,14 @@ final class HardeningTests: XCTestCase {
             Xray.RawPingAnswers.self,
             from: Data(#"{"results":[{"success":true,"delay":42}]}"#.utf8)
         )
-        XCTAssertEqual(raw.outcomes?.count, 1)
+        XCTAssertEqual(raw.outcomes.count, 1)
         // The entry the strict decode accepts still parses the same way,
         // so the element-wise fallback only diverges on broken entries.
         let strict = try JSONDecoder().decode(
             Xray.PingAnswers.self,
             from: Data(#"{"results":[{"success":true,"delay":42}]}"#.utf8)
         )
-        XCTAssertEqual(strict.outcomes?.first?.latencyMilliseconds, 42)
+        XCTAssertEqual(strict.outcomes.first?.latencyMilliseconds, 42)
         // A broken entry fails the strict decode — the synthesized
         // failure result takes its slot instead of poisoning the batch.
         XCTAssertThrowsError(
@@ -348,5 +348,99 @@ final class HardeningTests: XCTestCase {
             }
             XCTAssertTrue(message.contains("could not read engine log"), message)
         }
+    }
+
+    // MARK: - Re-audit fixes: destinations, bounds, ext:, clamping
+
+    func testDestinationOnlyRoutingRuleThrowsAtBuild() throws {
+        let options = shared.options(
+            routing: shared.routing(rules: [shared.routingRule(destination: .direct)])
+        )
+        XCTAssertThrowsError(
+            try shared.newSession().build(.json(minimalJSON), options: options)
+        ) { error in
+            guard case XrayError.invalidInput(let message) = error else {
+                return XCTFail("expected .invalidInput, got \(error)")
+            }
+            XCTAssertTrue(message.contains("selects nothing"), "got: \(message)")
+        }
+    }
+
+    func testPortCountAndExcludingBounds() {
+        XCTAssertThrowsError(try shared.findAvailablePorts(count: 10_000))
+        XCTAssertThrowsError(try shared.verifyAvailablePorts(count: 10_000))
+        XCTAssertThrowsError(try shared.findAvailablePorts(excluding: [0]))
+        XCTAssertThrowsError(try shared.findAvailablePorts(excluding: [99_999]))
+        XCTAssertThrowsError(try shared.verifyAvailablePorts(excluding: [-1]))
+    }
+
+    func testWatchdogRejectsEmptyHostAndHostPort() {
+        XCTAssertThrowsError(
+            try shared.trafficWatchdog(port: 24242, host: "", onStall: {})
+        )
+        XCTAssertThrowsError(
+            try shared.trafficWatchdog(port: 24242, host: "example.com:8080", onStall: {})
+        )
+    }
+
+    func testSnapshotRejectsHostPortShape() async throws {
+        let monitor = try shared.trafficMonitor(port: 24242, host: "example.com:8080")
+        do {
+            _ = try await monitor.snapshot()
+            XCTFail("expected a throw")
+        } catch let error as XrayError {
+            guard case .invalidInput(let message) = error else {
+                return XCTFail("expected .invalidInput, got \(error)")
+            }
+            XCTAssertTrue(message.contains("includes a port"), "got: \(message)")
+        } catch {
+            XCTFail("expected XrayError, got \(error)")
+        }
+    }
+
+    func testExternalFilesRejectEmptyFilename() {
+        XCTAssertThrowsError(
+            try XrayGeoAssets.check(externalFiles: [""], env: nil)
+        ) { error in
+            guard case XrayError.geoAssets(let message) = error else {
+                return XCTFail("expected .geoAssets, got \(error)")
+            }
+            XCTAssertTrue(message.contains("no filename"), "got: \(message)")
+        }
+    }
+
+    func testRemoteStartRejectsMissingExternalFile() async throws {
+        let feed = """
+        {"routing":{"rules":[{"type":"field","outboundTag":"direct","domains":["ext:custom.dat"]}]},"outbounds":[{"tag":"direct","protocol":"freedom"}]}
+        """
+        HTTPStub.replies = [HTTPStub.stubFeed: HTTPStub.Reply(status: 200, body: Data(feed.utf8))]
+        defer { HTTPStub.replies = [:] }
+        let session = shared.newSession()
+        session.urlSession = HTTPStub.session()
+        do {
+            try await session.start(
+                remoteSubscription: HTTPStub.stubFeed,
+                assetDirectory: FileManager.default.temporaryDirectory
+            )
+            XCTFail("expected a throw")
+        } catch let error as XrayError {
+            guard case .geoAssets(let message) = error else {
+                return XCTFail("expected .geoAssets, got \(error)")
+            }
+            XCTAssertTrue(message.contains("custom.dat"), "got: \(message)")
+        } catch {
+            XCTFail("expected XrayError, got \(error)")
+        }
+        XCTAssertNil(session.connectedSince)
+    }
+
+    func testCorruptCounterClampsInsteadOfFailingSnapshot() throws {
+        let body = """
+        {"stats":{"inbound":{"good":{"uplink":10,"downlink":20}},"outbound":{"broken":{"uplink":99999999999999999999,"downlink":5}}}}
+        """
+        let snapshot = try XrayTrafficMonitor.decodeSnapshot(from: Data(body.utf8))
+        XCTAssertEqual(snapshot.inbound["good"]?.up, 10)
+        XCTAssertEqual(snapshot.outbound["broken"]?.up, 0)
+        XCTAssertEqual(snapshot.outbound["broken"]?.down, 5)
     }
 }

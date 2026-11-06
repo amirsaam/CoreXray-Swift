@@ -16,7 +16,12 @@ import Foundation
 /// Decoding probes the narrowest type first: whole JSON numbers stay
 /// `.int` (only fractions become `.double`), and `doubleValue` reads
 /// an `.int` back as a `Double` so thresholds compare without casting.
-/// Object key order is not preserved — Swift dictionaries have none,
+/// A whole double like `1.0` therefore decodes as `.int(1)` and
+/// re-encodes as `1` — a representation change only; the engine parses
+/// sections by value, never by spelling. A non-finite `.double`
+/// (`.nan`, `.infinity`) has no JSON spelling, so encoding one throws.
+/// Object key order is not
+/// preserved — Swift dictionaries have none,
 /// and the engine parses sections by name, so never depend on it.
 @dynamicMemberLookup
 public enum XrayJSONValue: Codable, Sendable, Hashable {

@@ -55,7 +55,10 @@ extension Xray {
 
         init(text: String, ageSecret: String?) {
             self.text = text
-            self.age = ageSecret.map(AgeSecret.init)
+            // An empty secret is no secret: normalize it to nil so the
+            // wire carries either a real secret or no `age` key at all,
+            // never two needlessly distinct empty states.
+            self.age = ageSecret.flatMap { $0.isEmpty ? nil : AgeSecret(secretKey: $0) }
         }
 
         enum CodingKeys: String, CodingKey {
@@ -72,7 +75,7 @@ extension Xray {
         }
     }
 
-    internal struct LinkList: Decodable {
+    internal struct LinkList: Decodable, Sendable {
         let links: String
     }
 }

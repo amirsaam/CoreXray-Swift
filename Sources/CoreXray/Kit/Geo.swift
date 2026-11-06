@@ -38,7 +38,6 @@ public final class XrayGeoDownloader: @unchecked Sendable {
         return url
     }()
 
-    /// Default source for the IP database.
     /// Default source for the IP database. Lock-guarded: swapping
     /// sources mid-download races the in-flight request, so treat both
     /// URLs as set-once configuration.
@@ -207,34 +206,42 @@ public final class XrayGeoDownloader: @unchecked Sendable {
 /// Plain domains and IPs never require a database; the check exists only
 /// for references like `geosite:category-ads` or `geoip:private`.
 public enum XrayGeoAssets: Sendable {
-    /// Directory lookup, in the engine's own order: the document's
-    /// `env` (both the dotted `xray.location.asset` and the
-    /// underscore `XRAY_LOCATION_ASSET` spellings), then the process
-    /// environment under both spellings, then the shared install
-    /// locations (`/usr/local/share/xray`, `/usr/local/etc/xray`),
-    /// then the executable's directory. Returns nothing when none of
-    /// the sources apply — lookup locations are reported in the
+    /// Directory lookup, mirroring the engine's own search
+    /// (`GetAssetLocation` in Xray-core's `common/platform`, verified
+    /// at v26.10.31): the document's `env` and the process environment
+    /// fold through the same lookup, dotted spelling
+    /// (`xray.location.asset`) before the underscore one
+    /// (`XRAY_LOCATION_ASSET`), then the engine's fixed fallbacks
+    /// (`/usr/local/share/xray`, `/usr/share/xray`, `/opt/share/xray`).
+    /// The executable's directory is the engine's default only when no
+    /// location is set anywhere, so it is appended only when nothing
+    /// else named a directory. `/usr/local/etc/xray` is deliberately
+    /// absent: the engine never looks there. Returns nothing when none
+    /// of the sources apply — lookup locations are reported in the
     /// thrown error instead.
     static func candidateDirectories(env: XrayJSONObject?) -> [String] {
         var directories: [String] = []
-        // The engine honors both spellings everywhere, document env
-        // included — dotted first, matching its precedence.
+        // Pair each spelling's sources with the dotted one first: the
+        // engine's `EnvFlag` lookup tries the dotted name (from the
+        // document or the process, whichever set it) before the
+        // underscore one, so the gate checks in that order.
         for key in ["xray.location.asset", "XRAY_LOCATION_ASSET"] {
             if let asset = env?[key]?.stringValue, !asset.isEmpty, !directories.contains(asset) {
                 directories.append(asset)
             }
-        }
-        for key in ["xray.location.asset", "XRAY_LOCATION_ASSET"] {
-            let value = getenv(key).map { String(cString: $0) }
-            if let value, !value.isEmpty, !directories.contains(value) {
+            if let value = getenv(key).map({ String(cString: $0) }), !value.isEmpty, !directories.contains(value) {
                 directories.append(value)
             }
         }
-        for fixed in ["/usr/local/share/xray", "/usr/local/etc/xray"] where !directories.contains(fixed) {
+        for fixed in ["/usr/local/share/xray", "/usr/share/xray", "/opt/share/xray"] where !directories.contains(fixed) {
             directories.append(fixed)
         }
-        if let executable = Bundle.main.executableURL?.deletingLastPathComponent().path,
-           !executable.isEmpty, !directories.contains(executable) {
+        // Last resort, and only when nothing else named a directory:
+        // with a location set the engine never searches the
+        // executable's directory.
+        if directories.isEmpty,
+           let executable = Bundle.main.executableURL?.deletingLastPathComponent().path,
+           !executable.isEmpty {
             directories.append(executable)
         }
         return directories
@@ -245,13 +252,7 @@ public enum XrayGeoAssets: Sendable {
     /// both keys and values are considered. For `ext:` references see
     /// `referencedExternalFiles`.
     static func referenced(in config: XrayJSONObject) -> [XrayGeoDatabase] {
-        var names: Set<String> = []
-        var files: Set<String> = []
-        for section in ["routing", "dns"] {
-            collect(from: config[section], into: &names, files: &files)
-        }
-        _ = files
-        return names.compactMap(XrayGeoDatabase.init)
+        collected(in: config).names.compactMap(XrayGeoDatabase.init)
     }
 
     /// External data files named by `ext:` references
@@ -259,13 +260,18 @@ public enum XrayGeoAssets: Sendable {
     /// `XrayGeoDatabase` cases — the engine loads them by filename — so
     /// they travel separately into `check(externalFiles:env:)`.
     static func referencedExternalFiles(in config: XrayJSONObject) -> [String] {
+        collected(in: config).files.sorted()
+    }
+
+    /// Single walk over the routing and dns sections, gathering both
+    /// `geosite:`/`geoip:` names and `ext:` filenames.
+    private static func collected(in config: XrayJSONObject) -> (names: Set<String>, files: Set<String>) {
         var names: Set<String> = []
         var files: Set<String> = []
         for section in ["routing", "dns"] {
             collect(from: config[section], into: &names, files: &files)
         }
-        _ = names
-        return files.sorted()
+        return (names, files)
     }
 
     /// The database name in a string like `"geosite:category-ads"`.
@@ -278,15 +284,17 @@ public enum XrayGeoAssets: Sendable {
 
     /// The data file in an `ext:` reference (`"ext:custom.dat:tag"` →
     /// `"custom.dat"`): the filename sits between the prefix and the
-    /// final colon. A value with no second colon is a bare filename.
-    private static func externalFile(named text: String) -> String? {
+    /// final colon. A value with no second colon is a bare filename. An
+    /// empty filename (`"ext::tag"`) is kept as `""` rather than dropped,
+    /// so the gate rejects it with a naming-the-typo error instead of
+    /// passing a document the engine will fail on.
+    static func externalFile(named text: String) -> String? {
         guard text.hasPrefix("ext:") else { return nil }
         let rest = String(text.dropFirst(4))
         if let last = rest.lastIndex(of: ":") {
-            let file = String(rest[..<last])
-            return file.isEmpty ? nil : file
+            return String(rest[..<last])
         }
-        return rest.isEmpty ? nil : rest
+        return rest.isEmpty ? "" : rest
     }
 
     private static func collect(from value: XrayJSONValue?, into names: inout Set<String>, files: inout Set<String>) {
@@ -354,6 +362,11 @@ public enum XrayGeoAssets: Sendable {
         guard !files.isEmpty else { return }
         let directories = candidateDirectories(env: env)
         for file in files {
+            guard !file.isEmpty else {
+                throw XrayError.geoAssets(
+                    "the configuration references an 'ext:' entry with no filename (e.g. 'ext::tag'): put the data filename between the colons"
+                )
+            }
             if file.hasPrefix("/") {
                 guard verify(at: file) else {
                     throw XrayError.geoAssets("the configuration references external data file '\(file)' but it is not a readable file there")
@@ -373,8 +386,8 @@ public enum XrayGeoAssets: Sendable {
             guard found else {
                 throw XrayError.geoAssets("""
                 the configuration references external data file '\(file)' but no readable copy was found at: \
-                \(searched.joined(separator: ", ")). Download it into one of those directories, or pass its folder through \
-                xray.location.asset.
+                \(searched.joined(separator: ", ")). Place a copy of it in one of those directories \
+                (external files are not downloadable), or pass its folder through xray.location.asset.
                 """)
             }
         }
@@ -480,7 +493,8 @@ extension Xray {
     /// corrupt, then returns the directory for `options(environment:)`.
     /// Pass the values you assemble with: references are scanned from the
     /// assembled `XrayConfig` when given, and the engine's fixed search order
-    /// (document env, process env, executable directory) means a document
+    /// (document env, process env, fixed fallbacks, executable directory
+    /// as a last resort) means a document
     /// that needs no `geosite:`/`geoip:` rule needs no download at all.
     /// Unlike `XrayGeoDownloader.download(into:)`, files already present are
     /// never refetched. A configuration that is given but does not parse

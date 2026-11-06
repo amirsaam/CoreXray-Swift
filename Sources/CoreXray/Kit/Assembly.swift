@@ -198,8 +198,10 @@ public struct XrayAssembly {
     /// XrayMetrics listener, the `stats` section, and the policy switches
     /// `XrayTrafficMonitor` reads. Nil means no traffic counters.
     public var metricsPort: Int?
-    /// Final patch after everything else. Same position as the
-    /// low-level transform, for schema-exotic keys.
+    /// Final patch after everything else — it sees the fully assembled
+    /// document, so it overrules every setting above, including sniffing
+    /// and routing. Same position as the low-level transform, for
+    /// schema-exotic keys.
     public var patch: ((inout XrayJSONObject) -> Void)?
 
     internal init(
