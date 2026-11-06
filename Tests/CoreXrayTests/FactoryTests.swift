@@ -55,7 +55,7 @@ final class FactoryTests: XCTestCase {
         XCTAssertThrowsError(try shared.metrics(port: 0))
         let monitor = try shared.trafficMonitor(port: 24242)
         XCTAssertEqual(monitor.host, "127.0.0.1")
-        XCTAssertEqual(shared.observatory(subjectSelector: ["proxy"]).probeInterval, "1m")
+        XCTAssertEqual(try shared.observatory(subjectSelector: ["proxy"]).probeInterval, "1m")
     }
 
     func testPingFactories() throws {

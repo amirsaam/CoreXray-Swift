@@ -138,34 +138,49 @@ public final class XrayGeoDownloader: @unchecked Sendable {
         progress: @Sendable @escaping (Double) -> Void
     ) async throws {
         // Best-effort cleanup of a previous partial download; failure just means there was nothing there.
-    try? FileManager.default.removeItem(at: destination)
-        return try await withCheckedThrowingContinuation { continuation in
-            var observation: NSKeyValueObservation?
-            let task = urlSession.downloadTask(with: URLRequest(url: url)) { tempURL, response, error in
-                observation?.invalidate()
-                if let error {
-                    continuation.resume(throwing: error)
-                    return
+        try? FileManager.default.removeItem(at: destination)
+        let current = DownloadTaskBox()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                var observation: NSKeyValueObservation?
+                let task = urlSession.downloadTask(with: URLRequest(url: url)) { tempURL, response, error in
+                    observation?.invalidate()
+                    if let error {
+                        // A caller cancel surfaces as cooperative
+                        // cancellation, never a download failure.
+                        if (error as NSError).code == NSURLErrorCancelled {
+                            continuation.resume(throwing: CancellationError())
+                        } else {
+                            continuation.resume(throwing: error)
+                        }
+                        return
+                    }
+                    guard let response = response as? HTTPURLResponse, response.statusCode == 200 else {
+                        continuation.resume(throwing: URLError(.badServerResponse))
+                        return
+                    }
+                    guard let tempURL else {
+                        continuation.resume(throwing: URLError(.cannotCreateFile))
+                        return
+                    }
+                    do {
+                        try FileManager.default.moveItem(at: tempURL, to: destination)
+                        continuation.resume()
+                    } catch {
+                        continuation.resume(throwing: error)
+                    }
                 }
-                guard let response = response as? HTTPURLResponse, response.statusCode == 200 else {
-                    continuation.resume(throwing: URLError(.badServerResponse))
-                    return
+                observation = task.progress.observe(\.fractionCompleted) { value, _ in
+                    Task { @MainActor in progress(value.fractionCompleted) }
                 }
-                guard let tempURL else {
-                    continuation.resume(throwing: URLError(.cannotCreateFile))
-                    return
-                }
-                do {
-                    try FileManager.default.moveItem(at: tempURL, to: destination)
-                    continuation.resume()
-                } catch {
-                    continuation.resume(throwing: error)
-                }
+                current.task = task
+                // Already cancelled while setting up: stop before leaving
+                // a download running that nobody awaits.
+                if Task.isCancelled { task.cancel() }
+                task.resume()
             }
-            observation = task.progress.observe(\.fractionCompleted) { value, _ in
-                Task { @MainActor in progress(value.fractionCompleted) }
-            }
-            task.resume()
+        } onCancel: {
+            current.task?.cancel()
         }
     }
 }
@@ -216,13 +231,30 @@ public enum XrayGeoAssets: Sendable {
 
     /// Walks a subtree collecting geo references. XrayDNS `hosts` objects
     /// carry references as keys (`"geosite:malware": "127.0.0.1"`), so
-    /// both keys and values are considered.
+    /// both keys and values are considered. For `ext:` references see
+    /// `referencedExternalFiles`.
     static func referenced(in config: XrayJSONObject) -> [XrayGeoDatabase] {
         var names: Set<String> = []
+        var files: Set<String> = []
         for section in ["routing", "dns"] {
-            collect(from: config[section], into: &names)
+            collect(from: config[section], into: &names, files: &files)
         }
+        _ = files
         return names.compactMap(XrayGeoDatabase.init)
+    }
+
+    /// External data files named by `ext:` references
+    /// (`"ext:custom.dat:tag"` → `"custom.dat"`), sorted. These are not
+    /// `XrayGeoDatabase` cases — the engine loads them by filename — so
+    /// they travel separately into `check(externalFiles:env:)`.
+    static func referencedExternalFiles(in config: XrayJSONObject) -> [String] {
+        var names: Set<String> = []
+        var files: Set<String> = []
+        for section in ["routing", "dns"] {
+            collect(from: config[section], into: &names, files: &files)
+        }
+        _ = names
+        return files.sorted()
     }
 
     /// The database name in a string like `"geosite:category-ads"`.
@@ -233,22 +265,39 @@ public enum XrayGeoAssets: Sendable {
         return nil
     }
 
-    private static func collect(from value: XrayJSONValue?, into names: inout Set<String>) {
+    /// The data file in an `ext:` reference (`"ext:custom.dat:tag"` →
+    /// `"custom.dat"`): the filename sits between the prefix and the
+    /// final colon. A value with no second colon is a bare filename.
+    private static func externalFile(named text: String) -> String? {
+        guard text.hasPrefix("ext:") else { return nil }
+        let rest = String(text.dropFirst(4))
+        if let last = rest.lastIndex(of: ":") {
+            let file = String(rest[..<last])
+            return file.isEmpty ? nil : file
+        }
+        return rest.isEmpty ? nil : rest
+    }
+
+    private static func collect(from value: XrayJSONValue?, into names: inout Set<String>, files: inout Set<String>) {
         switch value {
         case .string(let text):
             if let named = database(named: text) {
                 names.insert(named)
+            } else if let file = externalFile(named: text) {
+                files.insert(file)
             }
         case .array(let items):
             for item in items {
-                collect(from: item, into: &names)
+                collect(from: item, into: &names, files: &files)
             }
         case .object(let entries):
             for (key, entry) in entries {
                 if let named = database(named: key) {
                     names.insert(named)
+                } else if let file = externalFile(named: key) {
+                    files.insert(file)
                 }
-                collect(from: entry, into: &names)
+                collect(from: entry, into: &names, files: &files)
             }
         default:
             break
@@ -280,6 +329,40 @@ public enum XrayGeoAssets: Sendable {
                 the configuration references '\(database.rawValue)' but no readable \(database.rawValue).dat was found at: \
                 \(searched.joined(separator: ", ")). Download the database with XrayGeoDownloader into one of those \
                 directories, or pass xray.location.asset through XraySessionOptions.environment.
+                """)
+            }
+        }
+    }
+
+    /// Verifies every `ext:`-referenced data file exists and reads like
+    /// a database. Bare filenames are searched in the candidate
+    /// directories; absolute paths are checked where they point.
+    /// Throws `XrayError.geoAssets` naming the file, like `check`.
+    static func check(externalFiles files: [String], env: XrayJSONObject?) throws {
+        guard !files.isEmpty else { return }
+        let directories = candidateDirectories(env: env)
+        for file in files {
+            if file.hasPrefix("/") {
+                guard verify(at: file) else {
+                    throw XrayError.geoAssets("the configuration references external data file '\(file)' but it is not a readable file there")
+                }
+                continue
+            }
+            var searched: [String] = []
+            var found = false
+            for directory in directories {
+                let path = (directory as NSString).appendingPathComponent(file)
+                searched.append(path)
+                if verify(at: path) {
+                    found = true
+                    break
+                }
+            }
+            guard found else {
+                throw XrayError.geoAssets("""
+                the configuration references external data file '\(file)' but no readable copy was found at: \
+                \(searched.joined(separator: ", ")). Download it into one of those directories, or pass its folder through \
+                xray.location.asset.
                 """)
             }
         }
@@ -324,6 +407,20 @@ extension Xray {
 /// let downloader = Xray.shared.geoDownloader()
 /// try await downloader.download(into: dataDir) { print($0) }
 /// ```
+
+/// Holds the in-flight download task so cooperative cancellation can
+/// reach it: `URLSession.downloadTask` only learns about a cancel
+/// through the task object. Lock-disciplined; the box outlives the
+/// assignment race between setup and `onCancel`.
+private final class DownloadTaskBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _task: URLSessionTask?
+
+    var task: URLSessionTask? {
+        get { lock.withLock { _task } }
+        set { lock.withLock { _task = newValue } }
+    }
+}
 
 /// Averages per-file fractions into one number. Thread-safe for the two
 /// concurrent download tasks reporting in.

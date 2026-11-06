@@ -12,7 +12,10 @@ extension Xray {
     /// configurations that listen locally, so every launch can sit on a
     /// fresh pocket instead of a hardcoded port.
     public func findAvailablePorts(count: Int = 1, excluding: [Int] = []) throws -> [Int] {
-        try PortCalls.spare(count: count, excluding: excluding)
+        guard count > 0 else {
+            throw XrayError.invalidInput("findAvailablePorts needs a count of at least 1")
+        }
+        return try PortCalls.spare(count: count, excluding: excluding)
     }
 
     /// Same as `findAvailablePorts`, but every returned port also passes a

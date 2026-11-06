@@ -47,7 +47,7 @@ public struct XrayTrafficCounter: Sendable {
         self.down = down
     }
 
-    public var total: Int64 { up + down }
+    public var total: Int64 { up &+ down }
 
     /// Later minus earlier. If the later reading is smaller, the engine
     /// restarted between snapshots and "before" is meaningless — so the
@@ -165,12 +165,15 @@ public struct XrayTrafficSnapshot: Sendable {
         self.observatory = observatory
     }
 
+    /// Byte counters are cumulative and unbounded, so every sum wraps
+    /// instead of trapping: months of uptime must not crash the
+    /// dashboard when the counters exceed `Int64.max`.
     public var totalUp: Int64 {
-        inbound.values.reduce(0) { $0 + $1.up } + outbound.values.reduce(0) { $0 + $1.up }
+        inbound.values.reduce(0) { $0 &+ $1.up } &+ outbound.values.reduce(0) { $0 &+ $1.up }
     }
 
     public var totalDown: Int64 {
-        inbound.values.reduce(0) { $0 + $1.down } + outbound.values.reduce(0) { $0 + $1.down }
+        inbound.values.reduce(0) { $0 &+ $1.down } &+ outbound.values.reduce(0) { $0 &+ $1.down }
     }
 
     /// Uplink/downlink counted on the outbound side only. The engine
@@ -180,12 +183,12 @@ public struct XrayTrafficSnapshot: Sendable {
     /// speeds want this side: for proxy mode it equals the bytes the
     /// device exchanged with the network.
     public var uplink: Int64 {
-        outbound.values.reduce(0) { $0 + $1.up }
+        outbound.values.reduce(0) { $0 &+ $1.up }
     }
 
     /// Outbound-side downlink; see `uplink`.
     public var downlink: Int64 {
-        outbound.values.reduce(0) { $0 + $1.down }
+        outbound.values.reduce(0) { $0 &+ $1.down }
     }
 
     /// Bytes moved between two snapshots, with per-second rates derived
@@ -196,16 +199,18 @@ public struct XrayTrafficSnapshot: Sendable {
             _ later: [String: XrayTrafficCounter],
             _ before: [String: XrayTrafficCounter]
         ) -> [String: XrayTrafficCounter] {
+            // Union, not just the later keys: a tag dropped on restart
+            // still appears (at zero), instead of silently vanishing.
             var out: [String: XrayTrafficCounter] = [:]
-            for (tag, counter) in later {
-                out[tag] = counter.delta(since: before[tag] ?? XrayTrafficCounter())
+            for tag in Set(later.keys).union(before.keys) {
+                out[tag] = (later[tag] ?? XrayTrafficCounter()).delta(since: before[tag] ?? XrayTrafficCounter())
             }
             return out
         }
         let inboundDelta = diffed(inbound, earlier.inbound)
         let outboundDelta = diffed(outbound, earlier.outbound)
-        let up = inboundDelta.values.reduce(0) { $0 + $1.up } + outboundDelta.values.reduce(0) { $0 + $1.up }
-        let down = inboundDelta.values.reduce(0) { $0 + $1.down } + outboundDelta.values.reduce(0) { $0 + $1.down }
+        let up = inboundDelta.values.reduce(0) { $0 &+ $1.up } &+ outboundDelta.values.reduce(0) { $0 &+ $1.up }
+        let down = inboundDelta.values.reduce(0) { $0 &+ $1.down } &+ outboundDelta.values.reduce(0) { $0 &+ $1.down }
         return XrayTrafficDelta(
             seconds: seconds,
             inbound: inboundDelta,
@@ -230,12 +235,12 @@ public struct XrayTrafficDelta: Sendable {
 
     /// Outbound-side bytes up over the interval; see `XrayTrafficSnapshot.uplink`.
     public var uplink: Int64 {
-        outbound.values.reduce(0) { $0 + $1.up }
+        outbound.values.reduce(0) { $0 &+ $1.up }
     }
 
     /// Outbound-side bytes down over the interval.
     public var downlink: Int64 {
-        outbound.values.reduce(0) { $0 + $1.down }
+        outbound.values.reduce(0) { $0 &+ $1.down }
     }
 
     public var upPerSecond: Double {
@@ -288,7 +293,10 @@ public struct XrayTrafficMonitor: Sendable {
         guard (1 ... 65_535).contains(port) else {
             throw XrayError.invalidInput("metrics port \(port) is outside 1...65535")
         }
-        guard let url = URL(string: "http://\(host):\(port)/debug/vars") else {
+        // Bracket bare IPv6 literals, or the port after the final colon
+        // reads as part of the address and URL formation fails.
+        let hostPart = host.contains(":") && !host.hasPrefix("[") ? "[\(host)]" : host
+        guard let url = URL(string: "http://\(hostPart):\(port)/debug/vars") else {
             throw XrayError.invalidInput("metrics host \(host) does not form a valid URL")
         }
         var request = URLRequest(url: url)
@@ -354,6 +362,12 @@ public final class XrayTrafficWatchdog {
         guard (1 ... 65_535).contains(port) else {
             throw XrayError.invalidInput("metrics port \(port) is outside 1...65535")
         }
+        guard interval > .zero else {
+            throw XrayError.invalidInput("traffic watchdog interval must be positive")
+        }
+        guard stalledAfter > .zero else {
+            throw XrayError.invalidInput("traffic watchdog stalledAfter must be positive")
+        }
         self.monitor = XrayTrafficMonitor(port: port, host: host)
         self.interval = interval
         self.stalledAfter = stalledAfter
@@ -401,8 +415,11 @@ public final class XrayTrafficWatchdog {
             // start the watchdog after one manual `snapshot()` or set
             // `stalledAfter` generously.
             if let now = try? await monitor.snapshot() {
+                // Any movement counts: growth is traffic, a drop is an
+                // engine restart resetting its counters — fresh traffic,
+                // not a stall. Only exactly-equal totals mean silence.
                 if let previous = last,
-                   now.totalUp + now.totalDown > previous.totalUp + previous.totalDown {
+                   now.totalUp &+ now.totalDown != previous.totalUp &+ previous.totalDown {
                     lastAdvance = ContinuousClock.now
                     fired = false
                 }
@@ -505,11 +522,26 @@ extension Xray {
         probeURL: String = "https://www.google.com/generate_204",
         probeInterval: String = "1m",
         enableConcurrency: Bool = false
-    ) -> XrayObservatory {
-        XrayObservatory(
+    ) throws -> XrayObservatory {
+        guard !subjectSelector.isEmpty else {
+            throw XrayError.invalidInput("observatory needs at least one subjectSelector: an empty selector probes nothing")
+        }
+        guard let url = URL(string: probeURL), ["http", "https"].contains(url.scheme?.lowercased()) else {
+            throw XrayError.invalidInput("observatory probeURL must be an http(s) URL, got \(probeURL)")
+        }
+        guard Self.isGoDuration(probeInterval) else {
+            throw XrayError.invalidInput("observatory probeInterval must be a Go duration like \"30s\" or \"1m\", got \(probeInterval)")
+        }
+        return XrayObservatory(
             subjectSelector: subjectSelector, probeURL: probeURL,
             probeInterval: probeInterval, enableConcurrency: enableConcurrency
         )
+    }
+
+    /// Go duration syntax (`ParseDuration`): a sign-optional run of
+    /// number+unit pairs like `30s`, `1m30s`, or `500ms`.
+    private static func isGoDuration(_ text: String) -> Bool {
+        text.range(of: #"^[+-]?(\d+(\.\d+)?(ns|us|µs|ms|s|m|h))+$"#, options: .regularExpression) != nil
     }
 
     public func trafficMonitor(
@@ -518,6 +550,12 @@ extension Xray {
         timeoutSeconds: Double = 5
     ) throws -> XrayTrafficMonitor {
         try Self.validPort(port, name: "traffic monitor")
+        guard !host.isEmpty else {
+            throw XrayError.invalidInput("traffic monitor host must not be empty")
+        }
+        guard timeoutSeconds > 0 else {
+            throw XrayError.invalidInput("traffic monitor timeoutSeconds must be positive, got \(timeoutSeconds)")
+        }
         return XrayTrafficMonitor(port: port, host: host, timeoutSeconds: timeoutSeconds)
     }
 }

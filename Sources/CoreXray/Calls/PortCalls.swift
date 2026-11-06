@@ -29,7 +29,7 @@ internal final class PortCalls {
         for _ in 0 ..< 10 {
             let candidates = try spare(count: count - verified.count, excluding: excluded)
             if candidates.isEmpty { break }
-            for port in candidates {
+            for port in candidates where !verified.contains(port) {
                 excluded.append(port)
                 if canBindTCPPort(port) {
                     verified.append(port)

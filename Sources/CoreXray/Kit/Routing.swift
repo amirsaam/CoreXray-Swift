@@ -68,6 +68,15 @@ public struct XrayRoutingRule: Sendable {
     /// Where the match goes.
     public var destination: XrayDestination?
 
+    /// A rule the engine rejects: no condition selects traffic and no
+    /// destination names where it goes (`{"type":"field"}` alone). The
+    /// trailing `final` catch-all always carries a destination, so it
+    /// never trips this — only a genuinely empty rule does.
+    var isIneffective: Bool {
+        domains.isEmpty && ips.isEmpty && port == nil && network == nil
+            && protocols.isEmpty && inboundTags.isEmpty && destination == nil
+    }
+
     internal init(
         domains: [String] = [],
         ips: [String] = [],

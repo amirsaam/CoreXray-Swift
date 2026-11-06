@@ -222,7 +222,7 @@ var assembly = Xray.shared.assembler(.shareLinks(text))
 assembly.socks = try Xray.shared.socksEntry(port: 10880)
 assembly.routing = Xray.shared.routing(rules: [...])
 assembly.metricsPort = 24242          // adds XrayMetrics listener + stats + policy
-assembly.observatory = Xray.shared.observatory(subjectSelector: ["proxy"])
+assembly.observatory = try Xray.shared.observatory(subjectSelector: ["proxy"])
 assembly.tun = try Xray.shared.tun(name: "utun7", fileDescriptor: fd)
 assembly.patch = { $0["log"] = ["loglevel": "warning"] }  // runs last
 let config = try assembly.assemble()
@@ -520,7 +520,9 @@ Xray.shared.routing(
 `"udp"`), `protocols` (sniffed: `http`, `tls`, `bittorrent`),
 `inboundTags`, and `destination`. Fields within a rule combine with AND,
 rules combine with OR. Every rule should carry a destination; rules without
-one write no `outboundTag` and match nothing useful.
+one write no `outboundTag` and match nothing useful. A rule with neither
+conditions nor a destination is rejected at build (`.invalidInput`) —
+the engine refuses empty rules, so the assembly fails fast instead.
 
 `geosite:` / `geoip:` categories need the corresponding `.dat` files where
 the engine will look for its assets — and the assembly enforces that before
@@ -711,7 +713,7 @@ Xray.shared.credentials(username:password:) -> XrayCredentials
 Xray.shared.sniffing(destOverride:enabled:routeOnly:domainsExcluded:metadataOnly:) -> XraySniffing
 Xray.shared.options(sniffing:transform:routing:credentials:tun:environment:observatory:geoCheck:dns:fakeDNS:log:metricsPort:) -> XraySessionOptions
 Xray.shared.metrics(tag:port:) throws -> XrayMetrics
-Xray.shared.observatory(subjectSelector:probeURL:probeInterval:enableConcurrency:) -> XrayObservatory
+Xray.shared.observatory(subjectSelector:probeURL:probeInterval:enableConcurrency:) throws -> XrayObservatory
 Xray.shared.trafficMonitor(port:host:timeoutSeconds:) throws -> XrayTrafficMonitor
 Xray.shared.trafficWatchdog(port:host:interval:stalledAfter:onStall:) throws -> XrayTrafficWatchdog
 Xray.shared.pingTarget(config:outboundTag:) -> XrayPingTarget
@@ -795,7 +797,9 @@ binary. Setting `metricsPort` writes the three config pieces that enable it:
 the `metrics` listener on `127.0.0.1:port`, an empty `stats` section, and the
 four `policy.system` stats switches (merged into your existing policy, never
 replacing it). Out-of-range ports throw `.invalidInput` at assembly, before
-anything launches. Treat the port like a local proxy listener: it binds
+anything launches — and so does a metrics port an inbound already listens on:
+give metrics its own pocket (from `verifyAvailablePorts`), not a shared one.
+Treat the port like a local proxy listener: it binds
 loopback only, but any process on the device can reach loopback — and the
 endpoint also serves the engine's `pprof` block — so keep it unadvertised
 and verify it the way you'd guard SOCKS.
@@ -826,7 +830,7 @@ endpoint:
 ```swift
 var assembly = Xray.shared.assembler(.shareLinks(text))
 assembly.metricsPort = verifiedPort
-assembly.observatory = Xray.shared.observatory(
+assembly.observatory = try Xray.shared.observatory(
     subjectSelector: ["fast"],        // probe outbound tags with this prefix
     probeInterval: "1m"               // Go duration: "30s", "2m", "1h"
 )
@@ -846,7 +850,10 @@ probe is on record), `failureReason` (the engine's own text for the last
 failure), `lastSeen`, `lastTry`. Probing costs a real network request per
 selected outbound per interval — pick `subjectSelector` deliberately and
 keep the interval honest. Without an `observatory` section the field reads
-empty; without `metricsPort` there is no place to read the answers.
+empty; without `metricsPort` there is no place to read the answers. The
+factory validates up front: an empty selector, a non-http(s) probe URL, or
+a malformed interval (Go durations look like `"30s"`, `"1m"`, `"1h"`)
+throws `.invalidInput` before anything is written.
 
 #### `XrayTrafficWatchdog`: fire once per stall, then reset
 
@@ -887,7 +894,9 @@ the process environment, then the executable's directory. A missing, empty,
 or garbage file throws `.geoAssets`, naming the database and every directory
 searched. Plain domains and CIDRs never trigger the check, and
 `XraySessionOptions.geoCheck: false` turns it off entirely for documents you verify
-yourself.
+yourself. `ext:` references are checked the same way by filename: a bare
+`ext:custom.dat:tag` is searched in the candidate directories, an absolute
+path is checked where it points — a missing file throws `.geoAssets` too.
 
 **The fetch.** The engine only inventories databases it already has.
 Fetching them is a separate step, and this package covers it too:

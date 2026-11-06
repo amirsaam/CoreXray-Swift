@@ -62,7 +62,7 @@ Part of the running config, not a separate call:
 
 ```swift
 var a = engine.assembler(.shareLinks(feed))
-a.observatory = engine.observatory(
+a.observatory = try engine.observatory(
     subjectSelector: ["proxy"],               // which outbounds to probe
     probeURL: "https://www.google.com/generate_204",
     probeInterval: "30s"

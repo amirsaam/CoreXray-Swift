@@ -275,6 +275,9 @@ public final class XraySession: @unchecked Sendable {
             dict["policy"] = .object(policy)
         }
         if let routing = options.routing {
+            if routing.rules.contains(where: { $0.isIneffective }) {
+                throw XrayError.invalidInput("routing contains a rule with no conditions and no destination: the engine rejects empty rules — give it domains, ips, a port, or a destination")
+            }
             let proxyTag: String
             if routing.needsProxy {
                 guard let resolved = Self.ensureProxyTag(in: &dict) else {
@@ -286,10 +289,30 @@ public final class XraySession: @unchecked Sendable {
             }
             dict["routing"] = .object(routing.wireObject(proxyTag: proxyTag))
         }
-        Self.ensureDNSRelayRoute(in: &dict)
         try Self.applyCredentials(options.credentials, to: &dict)
         options.transform?(&dict)
+        // The relay route is checked after the transform runs, so relays
+        // the transform adds are covered too — and standard outbounds are
+        // backfilled after that, so a referenced `dns-out` always exists.
+        // The check is idempotent, so an explicit route for the tag wins.
+        Self.ensureDNSRelayRoute(in: &dict)
         Self.ensureStandardOutbounds(in: &dict)
+        if let metricsPort = options.metricsPort {
+            var taken: [Int] = []
+            if case .array(let inbounds) = dict["inbounds"] {
+                for inbound in inbounds {
+                    guard case .object(let entry) = inbound else { continue }
+                    if case .int(let port) = entry["port"] {
+                        taken.append(port)
+                    } else if case .string(let text) = entry["port"], let port = Int(text) {
+                        taken.append(port)
+                    }
+                }
+            }
+            if taken.contains(metricsPort) {
+                throw XrayError.invalidInput("metrics port \(metricsPort) collides with an inbound listening on the same port: pick a dedicated port")
+            }
+        }
         if options.geoCheck {
             try Self.checkGeoAssets(in: dict)
         }
@@ -355,7 +378,7 @@ public final class XraySession: @unchecked Sendable {
         do {
             json = try String(contentsOf: url, encoding: .utf8)
         } catch {
-            throw XrayError.bridgeFailed("could not read config file: \(error.localizedDescription)")
+            throw XrayError.invalidInput("could not read config file at \(url.path): \(error.localizedDescription)")
         }
         try start(rawJSON: json)
     }
@@ -541,7 +564,7 @@ public final class XraySession: @unchecked Sendable {
         // nothing newer began since.
         let gate = StartRaceGate()
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            let timer = Task.detached {
+            let timer = Task.detached { [weak self] in
                 do {
                     try await Task.sleep(for: deadline)
                 } catch {
@@ -630,10 +653,14 @@ public final class XraySession: @unchecked Sendable {
                 if entry["protocol"]?.stringValue == "tun" {
                     sawTun = true
                     // The descriptor travels through the document env
-                    // (see `XrayTunEntry`); without it the engine has no
+                    // (see `XrayTunEntry`), but the engine also reads the
+                    // process env — a descriptor the caller already holds
+                    // counts too. Without either, the engine has no
                     // interface to read packets from.
                     if let env = object["env"]?.objectValue,
                        env["xray.tun.fd"] != nil || env["XRAY_TUN_FD"] != nil {
+                        sawTunFD = true
+                    } else if getenv("xray.tun.fd") != nil || getenv("XRAY_TUN_FD") != nil {
                         sawTunFD = true
                     }
                 }
@@ -711,6 +738,11 @@ public final class XraySession: @unchecked Sendable {
         } catch let error as XrayError {
             throw error
         } catch {
+            // Cancellation is cooperative, never a fetch failure: rethrow
+            // it untouched so callers can distinguish cancel from error.
+            if error is CancellationError || (error as NSError).code == NSURLErrorCancelled {
+                throw CancellationError()
+            }
             throw XrayError.bridgeFailed("could not fetch subscription: \(error.localizedDescription)")
         }
         let unwrapped = try Xray.shared.decodeSubscription(text, ageSecret: ageSecret)
@@ -789,9 +821,14 @@ public final class XraySession: @unchecked Sendable {
     /// wherever the engine will look for it. The document's `env` counts
     /// first, so an asset path shipped in it overrides the defaults.
     private static func checkGeoAssets(in config: XrayJSONObject) throws {
+        let env = config["env"]?.objectValue
         try XrayGeoAssets.check(
             referenced: XrayGeoAssets.referenced(in: config),
-            env: config["env"]?.objectValue
+            env: env
+        )
+        try XrayGeoAssets.check(
+            externalFiles: XrayGeoAssets.referencedExternalFiles(in: config),
+            env: env
         )
     }
 
@@ -834,12 +871,25 @@ public final class XraySession: @unchecked Sendable {
 
     /// Returns the first outbound's tag, assigning `"proxy"` when it has
     /// none. Returns nil when the document has no outbounds at all.
+    /// Resolves the `.proxy` destination to an outbound tag: the first
+    /// outbound that actually proxies. Conversion output usually leads
+    /// with `direct`, and routing the proxy there would bypass the
+    /// tunnel — so `freedom`, `blackhole`, and `dns` outbounds are
+    /// skipped. Falls back to the first outbound when nothing else
+    /// qualifies. An untagged winner is tagged `"proxy"` in place so
+    /// later stages agree on the name.
     private static func ensureProxyTag(in config: inout XrayJSONObject) -> String? {
         guard case .array(var outbounds) = config["outbounds"], !outbounds.isEmpty else { return nil }
-        guard case .object(var first) = outbounds[0] else { return nil }
-        if case .string(let tag) = first["tag"] { return tag }
-        first["tag"] = .string("proxy")
-        outbounds[0] = .object(first)
+        let passthrough: Set<String> = ["freedom", "blackhole", "dns"]
+        let index = outbounds.firstIndex { outbound in
+            guard case .object(let entry) = outbound else { return false }
+            guard case .string(let proto) = entry["protocol"] else { return true }
+            return !passthrough.contains(proto)
+        } ?? outbounds.startIndex
+        guard case .object(var winner) = outbounds[index] else { return nil }
+        if case .string(let tag) = winner["tag"] { return tag }
+        winner["tag"] = .string("proxy")
+        outbounds[index] = .object(winner)
         config["outbounds"] = .array(outbounds)
         return "proxy"
     }
@@ -889,8 +939,10 @@ public final class XraySession: @unchecked Sendable {
     /// relay's queries fall through to `final` (or the proxy) instead
     /// of the local resolver. Appends the rule when no rule already
     /// claims the relay tag, and creates the routing section when the
-    /// document has none — `transform` still runs after, so an explicit
-    /// route for the tag always wins over this default.
+    /// document has none. Runs after the transform so transform-added
+    /// relays are covered; runs before the standard-outbound backfill
+    /// so a referenced `dns-out` always exists. An explicit route for
+    /// the tag always wins over this default.
     private static func ensureDNSRelayRoute(in config: inout XrayJSONObject) {
         guard config["dns"] != nil,
               case .array(let inbounds) = config["inbounds"] else { return }

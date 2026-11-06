@@ -51,7 +51,7 @@ final class ProviderFlowTests: XCTestCase {
     // MARK: - XrayAssembly-time guards
 
     func testObservatoryWithoutMetricsPortThrowsAtBuild() throws {
-        let observatory = Xray.shared.observatory(subjectSelector: ["direct"])
+        let observatory = try Xray.shared.observatory(subjectSelector: ["direct"])
         let options = Xray.shared.options(observatory: observatory)
         XCTAssertThrowsError(
             try XraySession().build(.json(minimalJSON), options: options)

@@ -37,12 +37,14 @@ internal final class EngineTransport {
     }
 
     /// Lowest-level call: serializes nothing, checks nothing. Everything
-    /// above goes through the serial lane.
-    internal static func rawCall(_ request: String) -> String {
-        lane.sync {
+    /// above goes through the serial lane. A missing engine answer throws
+    /// `.bridgeFailed` outright instead of a fabricated failure envelope,
+    /// so a dead bridge can never look like an engine verdict.
+    internal static func rawCall(_ request: String) throws -> String {
+        try lane.sync {
             var bytes = Array(request.utf8CString)
             guard let response = CGoInvoke(&bytes) else {
-                return #"{"success":false,"data":null,"error":"CGoInvoke returned no response"}"#
+                throw XrayError.bridgeFailed("the engine bridge returned no response: the engine may not be loaded")
             }
             defer { CGoFree(response) }
             return String(cString: response)
@@ -51,7 +53,7 @@ internal final class EngineTransport {
 
     /// Sends an operation with no payload.
     internal static func send(_ method: Xray.Method) throws -> String {
-        rawCall("""
+        try rawCall("""
         {"apiVersion":\(protocolVersion),"method":"\(method.rawValue)"}
         """)
     }
@@ -68,7 +70,7 @@ internal final class EngineTransport {
             throw XrayError.bridgeFailed("payload could not be encoded as UTF-8 JSON")
         }
         try guardRequestSize(text)
-        return rawCall("""
+        return try rawCall("""
         {"apiVersion":\(protocolVersion),"method":"\(method.rawValue)","payload":\(text)}
         """)
     }
