@@ -20,8 +20,8 @@ let package = Package(
     targets: [
         .binaryTarget(
             name: "LibXray",
-            url: "https://github.com/XTLS/libXray/releases/download/v26.10.31/libxray-apple-cgo.zip",
-            checksum: "2666babc1a91d8570a49bc817487338e7a71f17618e02a601e861928d254b95a"
+            url: "https://github.com/XTLS/libXray/releases/download/v26.11.9/libxray-apple-cgo.zip",
+            checksum: "7c58346709f1856782a48d8f9926fb815c8ad1bbaf9e5d9dec4ee0cd1f41ed6f"
         ),
         .target(
             name: "CoreXray",
