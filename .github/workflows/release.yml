@@ -1,0 +1,59 @@
+name: Draft release notes
+
+# Cutting a release stays manual: push a bare <epoch>.<swift-major>.<swift-minor>
+# tag and this workflow drafts the release (named v<tag>) in the house format —
+# bold title, Core/Swift lines, NEW / CHANGES / FIXES, compare link. The
+# maintainer fills the three sections, then publishes the draft by hand.
+# The workflow never publishes anything itself.
+
+on:
+  push:
+    tags:
+      - '[0-9]*.[0-9]*.[0-9]*'
+
+permissions:
+  contents: write
+
+jobs:
+  draft:
+    name: Draft the release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-tags: true
+
+      - name: Create draft release from the tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "Release ${TAG} already exists; nothing to do."
+            exit 0
+          fi
+          swift="${TAG#*.}"
+          core="v$(grep -o 'releases/download/v[0-9.]*/' Package.swift | head -1 | sed 's#.*/v##; s#/$##')"
+          prev=$(git tag --list '[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | grep -vx "${TAG}" | head -1 || true)
+          {
+            echo "**CoreXray ${TAG}**"
+            echo
+            echo "Core: XTLS/libXray ${core}"
+            echo "Swift: ${swift}"
+            echo
+            echo "**NEW**:"
+            echo "- This release contains no new APIs"
+            echo
+            echo "**CHANGES**:"
+            echo "- This release contains no API/Core changes"
+            echo
+            echo "**FIXES**:"
+            echo "- This release contains no bug fixes"
+            if [ -n "${prev}" ]; then
+              echo
+              echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/${prev}...${TAG}"
+            fi
+          } > /tmp/release-notes.md
+          cat /tmp/release-notes.md
+          gh release create "${TAG}" --title "v${TAG}" --notes-file /tmp/release-notes.md --draft

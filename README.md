@@ -1107,15 +1107,21 @@ How a new core reaches you:
    past the merge — a PR is a pin update, never a release.
 
 Cutting a release (maintainer): pick the numbers — the epoch from the pinned
-core (`26.10.31` → `261031`), the Swift major/minor unchanged unless the
-Swift code changed since the last tag — then:
+core (`26.11.9` → `261109`), the Swift major/minor unchanged unless the
+Swift code changed since the last tag — then push the tag:
 
 ```bash
-git tag 261031.1.0
-git push origin 261031.1.0
-gh release create 261031.1.0 --title v261031.1.0 --notes "Core: XTLS/libXray v26.10.31
-Swift: 1.0 (unchanged)"
+git tag 261109.1.1
+git push origin 261109.1.1
 ```
+
+The push drafts the release for you (`Draft release notes` workflow): a
+**draft** named `v261109.1.1` in the house format — bold title, Core/Swift
+lines, `NEW` / `CHANGES` / `FIXES` pre-filled with the "contains no …"
+lines, and a Full Changelog compare link. Fill the three sections, then
+publish the draft by hand. The workflow never publishes anything itself;
+if the release already exists it does nothing, so re-pushing the tag is
+safe.
 
 Tag pushes run the CI suite on the tag, so a red commit is still caught —
 delete the tag and release if that happens and re-cut. The release name
