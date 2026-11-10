@@ -29,13 +29,13 @@ public struct XraySessionOptions {
     /// appends a `protocol: tun` inbound and, when the entry carries
     /// a file descriptor, merges `xray.tun.fd` into the document's
     /// `env`. Nil means proxy mode: no TUN inbound, no `env` key.
-    /// Launch the result where the interface lives — inside the
+    /// Launch the result where the interface lives, inside the
     /// NetworkExtension on iOS, in the app on macOS.
     public var tun: XrayTunEntry?
 
     /// Extra document environment entries, merged into `env` before
     /// the TUN descriptor is applied. The engine turns `env` into
-    /// its own process environment at launch — the documented carrier
+    /// its own process environment at launch. It is the documented carrier
     /// for `xray.location.asset` (geo database lookup directory),
     /// `xray.location.cert`, and similar engine settings. Keys here
     /// never overwrite ones already in the document.
@@ -70,7 +70,7 @@ public struct XraySessionOptions {
 
     /// XrayMetrics endpoint port. When set, the build adds a XrayMetrics
     /// listener on 127.0.0.1:`metricsPort`, an empty `stats` section,
-    /// and the four `policy.system` stats switches — everything
+    /// and the four `policy.system` stats switches, everything
     /// `XrayTrafficMonitor` needs to read live counters. Replaces any
     /// metrics section already in the document; existing policy keys
     /// are kept, the stats switches are turned on alongside them.
@@ -116,7 +116,7 @@ public enum XrayEngineLogKind {
 /// session to a single serial context: the engine calls underneath are
 /// serialized, but interleaving two sessions' start/stop sequences from
 /// different threads is a logic race this type does not referee.
-/// Sessions are ownership handles, not isolated engines — only one
+/// Sessions are ownership handles, not isolated engines. Only one
 /// instance runs per process, a new start replaces the old one, and a
 /// superseded session's late-arriving success stamps nothing (its
 /// generation lost). The async `logger` you hand to `newSession` runs
@@ -134,7 +134,7 @@ public final class XraySession: @unchecked Sendable {
     // Mutable state lives behind `stateLock`; the bridge calls underneath
     // are serialized by the transport lane. `@unchecked` is the honest
     // marking: `logger` runs on the caller's thread by design, so keep
-    // each session on one serial context — interleaving two sessions'
+    // each session on one serial context. Interleaving two sessions'
     // start/stop sequences from different threads is a logic race no
     // lock can referee.
     private let stateLock = NSLock()
@@ -150,7 +150,7 @@ public final class XraySession: @unchecked Sendable {
     /// Process-wide launch epoch shared by every session. Sessions
     /// multiply (app plus provider, tests, previews) but the engine is
     /// one global instance, so a cleanup must also prove nothing else
-    /// launched since — the per-session epoch alone can't see across
+    /// launched since. The per-session epoch alone can't see across
     /// sessions. Every start and every stop bumps it alongside the
     /// session epoch; a compensation only fires when both still match
     /// what it captured.
@@ -169,7 +169,7 @@ public final class XraySession: @unchecked Sendable {
 
     /// Transport for feed fetches. `URLSession.shared` in production;
     /// tests swap in a stubbed configuration. Set once before the first
-    /// fetch — access is lock-guarded, but swapping it mid-fetch races
+    /// fetch. Access is lock-guarded, but swapping it mid-fetch races
     /// the in-flight request, so treat it as set-once configuration.
     internal var urlSession: URLSession {
         get { stateLock.withLock { _urlSession } }
@@ -196,7 +196,7 @@ public final class XraySession: @unchecked Sendable {
 
     /// When the running instance came up, if one did. Nil before the
     /// first start and after every stop. The engine exposes no clock of
-    /// its own, so this stamp is the uptime anchor — pair it with traffic
+    /// its own, so this stamp is the uptime anchor. Pair it with traffic
     /// totals, which reset on every launch.
     public var connectedSince: Date? {
         stateLock.withLock { _connectedSince }
@@ -205,7 +205,7 @@ public final class XraySession: @unchecked Sendable {
     /// This session's data usage: outbound-side upload/download totals
     /// fed from a `XrayTrafficMonitor` poll loop via `advance`. Reset on
     /// every successful start, kept across `stop` so the disconnect
-    /// report survives. The reference is stable — hold it once:
+    /// report survives. The reference is stable, so hold it once:
     ///
     /// ```swift
     /// let monitor = try engine.trafficMonitor(port: 10085)
@@ -344,8 +344,8 @@ public final class XraySession: @unchecked Sendable {
             }
             dict["routing"] = .object(routing.wireObject(proxyTag: proxyTag))
             // A custom tag the document never defines fails at runtime,
-            // not at build — and the transform below can still add the
-            // outbound — so this warns instead of throwing. Forward
+            // not at build, and the transform below can still add the
+            // outbound, so this warns instead of throwing. Forward
             // references by design, typos by accident: read the line.
             if case .object(let assembled) = dict["routing"],
                case .array(let rules) = assembled["rules"] {
@@ -368,7 +368,8 @@ public final class XraySession: @unchecked Sendable {
             }
             // A match-all sitting above `final` starves it: every routed
             // connection is already claimed, so the final silently never
-            // fires. Flag it — ordering, not engine behavior. One is
+            // fires. Flag it. The problem is ordering, not engine behavior.
+            // One is
             // enough: a single match-all above `final` already claims
             // everything the final would have caught.
             let matchAll = routing.rules.filter { $0.isMatchAll }
@@ -378,11 +379,11 @@ public final class XraySession: @unchecked Sendable {
         }
         options.transform?(&dict)
         // Credentials run after the transform, so SOCKS inbounds the
-        // transform adds are guarded too — guarding before it left
+        // transform adds are guarded too. Guarding before it left
         // exactly those open while claiming the configuration guarded.
         try Self.applyCredentials(options.credentials, to: &dict)
         // The relay route is checked after the transform runs, so relays
-        // the transform adds are covered too — and standard outbounds are
+        // the transform adds are covered too, and standard outbounds are
         // backfilled after that, so a referenced `dns-out` always exists.
         // The check is idempotent, so an explicit route for the tag wins.
         Self.ensureDNSRelayRoute(in: &dict)
@@ -391,7 +392,7 @@ public final class XraySession: @unchecked Sendable {
         // section (or delete the metrics one) that the pre-transform
         // check above never saw. Probe answers publish on the metrics
         // endpoint, so an observatory without it reads empty forever.
-        // The document's own metrics section counts — this is about
+        // The document's own metrics section counts. This is about
         // presence, not about who wrote it.
         if dict["observatory"] != nil && dict["metrics"] == nil {
             throw XrayError.invalidInput(
@@ -439,7 +440,7 @@ public final class XraySession: @unchecked Sendable {
     /// instance is stopped first, so the launch never fails with an
     /// already-running refusal. The log section's file paths are adopted
     /// only when the launch succeeds, so engine-file tailing follows
-    /// this run — a failed launch keeps the previous run's tail.
+    /// this run. A failed launch keeps the previous run's tail.
     public func start(_ config: XrayConfig) throws {
         try replaceRunningInstance()
         let generation = nextGeneration()
@@ -461,7 +462,7 @@ public final class XraySession: @unchecked Sendable {
 
     /// Launches an assembled configuration with options (environment,
     /// metrics port, geo gate). Same replace-first, adopt-on-success
-    /// semantics as `start(_:)` — this is the form the rebuild recipe
+    /// semantics as `start(_:)`. This is the form the rebuild recipe
     /// holds onto: the config plus the options it launched with.
     public func start(_ config: XrayConfig, options: XraySessionOptions? = nil) throws {
         try start(.json(config.json), options: options)
@@ -502,7 +503,7 @@ public final class XraySession: @unchecked Sendable {
 
     /// Assembles with `options` and validates the result, so you check
     /// exactly what would launch. The check runs inside the engine, so
-    /// it needs the engine stopped — while running, validate the
+    /// it needs the engine stopped. While running, validate the
     /// structure offline with `XrayConfig.validateOffline()` instead.
     public func validate(
         _ source: XrayConfigSource,
@@ -517,7 +518,7 @@ public final class XraySession: @unchecked Sendable {
     /// compensating cleanup stands down instead of racing you. Same for
     /// a stop racing an unsettled launch on another task: the call
     /// below always wins the lane, so stop first, then confirm with
-    /// `isRunning()` — there is no generation guard that can make a
+    /// `isRunning()`. No generation guard can make a
     /// stop wait for a launch still in flight.
     public func stop() throws {
         _ = nextGeneration()
@@ -569,7 +570,7 @@ public final class XraySession: @unchecked Sendable {
     /// Sessions multiply (app plus provider, tests, previews) but the
     /// engine is one global instance, so a cleanup must also prove
     /// nothing else launched since. Lock order is always stateLock
-    /// before processLock — never the reverse.
+    /// before processLock, never the reverse.
     private static func claimProcessGeneration() -> Int {
         processLock.withLock {
             _processGeneration += 1
@@ -584,10 +585,10 @@ public final class XraySession: @unchecked Sendable {
 
     /// Decodes launch JSON back to its document, for post-launch
     /// adoption. Documents come out of `build`, so this only fails on
-    /// programmer error — nil means skip adoption, never throw. Falls
+    /// programmer error. Nil means skip adoption, never throw. Falls
     /// back to a comment-stripped decode: the engine's loader accepts
     /// `//` and `/* */` comments, so a commented document the engine
-    /// launches must clear stale fds and adopt log paths too — a
+    /// launches must clear stale fds and adopt log paths too. A
     /// strict-only decode would silently skip both. Shared with
     /// preflight, so a commented document passes the check the launch
     /// itself would pass.
@@ -595,7 +596,7 @@ public final class XraySession: @unchecked Sendable {
         Self.tolerantDict(from: json)
     }
 
-    /// Strict decode first, comment-stripped fallback second — the one
+    /// Strict decode first, comment-stripped fallback second, the one
     /// tolerant reader every launch-path scan uses.
     internal static func tolerantDict(from json: String) -> XrayJSONObject? {
         let data = Data(json.utf8)
@@ -610,7 +611,7 @@ public final class XraySession: @unchecked Sendable {
     /// Removes `//` line and `/* */` block comments outside string
     /// literals, mirroring what the engine's loader accepts. Escaped
     /// quotes inside strings are honored, so a `//` inside a value
-    /// survives. Returns nil when quotes never close — garbage in,
+    /// survives. Returns nil when quotes never close. Garbage in,
     /// no decode attempted.
     private static func strippingJSONComments(_ json: String) -> String? {
         var out = ""
@@ -675,9 +676,9 @@ public final class XraySession: @unchecked Sendable {
     }
 
     /// An asset directory named inside a JSON feed's own `env`, if any.
-    /// A feed that pins its geodata next to itself travels with its
-    /// address book — used only when neither the caller options nor an
-    /// explicit asset directory already named one. Takes the once-decoded
+    /// A feed that pins its geodata in its own `env` JSON carries that
+    /// directory with it. It applies only when neither the caller options
+    /// nor an explicit asset directory already named one. Takes the once-decoded
     /// feed (nil for a raw link feed, which carries no `env`).
     internal static func feedEnvAsset(in feed: XrayJSONObject?) -> String? {
         guard case .object(let env) = feed?["env"] else { return nil }
@@ -691,7 +692,7 @@ public final class XraySession: @unchecked Sendable {
     /// own: the engine applies document `env` into its process at start
     /// and never unsets, so a descriptor left by an earlier TUN session
     /// would hijack this launch into reading a dead fd. Runs at launch,
-    /// never at build — inspecting a document must not touch process
+    /// never at build. Inspecting a document must not touch process
     /// state. Swift never installs these variables itself, so anything
     /// found in the process is engine residue by definition: the
     /// document is the only carrier the launch honors, and a process
@@ -701,7 +702,7 @@ public final class XraySession: @unchecked Sendable {
         guard case .array(let inbounds) = dict["inbounds"],
               inbounds.contains(where: { $0.objectValue?["protocol"]?.stringValue == "tun" }) else { return }
         let env = dict["env"]?.objectValue ?? [:]
-        // Empty strings count as missing — same rule as preflight —
+        // Empty strings count as missing, same rule as preflight,
         // and so do non-string values, which preflight already flags
         // as a construction bug rather than a descriptor.
         let carriesFD = [env["xray.tun.fd"], env["XRAY_TUN_FD"]].contains {
@@ -722,7 +723,7 @@ public final class XraySession: @unchecked Sendable {
 
     /// First-wins latch for the deadline race below. Two detached tasks
     /// (the timer, the launch waiter) share one continuation, and
-    /// continuations trap on a second resume — the gate lets exactly one
+    /// continuations trap on a second resume. The gate lets exactly one
     /// side through. Lock-disciplined like the rest of this type.
     private final class StartRaceGate: @unchecked Sendable {
         private let lock = NSLock()
@@ -738,14 +739,14 @@ public final class XraySession: @unchecked Sendable {
     }
 
     /// Stops the instance left behind by a timed-out or cancelled start,
-    /// but only when nothing newer began since — on this session or any
+    /// but only when nothing newer began since, on this session or any
     /// other. A follow-up start or stop on this session bumps the
     /// session epoch; a start on another session bumps the process
     /// epoch; either way a stale compensation stands down instead of
     /// killing the current instance. The epoch is claimed (bumped) under
     /// the locks before stopping, so two racing compensations can't
     /// both fire: the second sees the claim and stands down. Best
-    /// effort — errors are swallowed, success is logged.
+    /// effort: errors are swallowed, success is logged.
     private func stopIfCurrent(generation: Int, process: Int) {
         let proceed = stateLock.withLock { _generation == generation }
             && Self.processLock.withLock {
@@ -759,7 +760,7 @@ public final class XraySession: @unchecked Sendable {
 
     /// Every start replaces: the engine holds one instance per process
     /// and launching over a live one throws, so a running instance is
-    /// stopped first. Safe to call idle — the stop is skipped when
+    /// stopped first. Safe to call idle. The stop is skipped when
     /// nothing runs.
     private func replaceRunningInstance() throws {
         let running: Bool
@@ -767,8 +768,8 @@ public final class XraySession: @unchecked Sendable {
             running = try LifecycleCalls.isRunning()
         } catch {
             // Never launch blind silently: if the probe itself failed,
-            // say so in the flight log, and clear the stamp — the stop
-            // inside `replaceRunningInstance` is what normally clears
+            // log it and clear the stamp. The stop
+            // inside `replaceRunningInstance` normally clears
             // it, and that stop never ran here, so without this an old
             // `connectedSince` would survive into a launch whose
             // engine state is unknown. The launch still proceeds: a
@@ -815,11 +816,11 @@ public final class XraySession: @unchecked Sendable {
         } catch is CancellationError {
             // The detached launch doesn't inherit cancellation, so it
             // may still be settling: park a generation-guarded cleanup
-            // that waits for the orphan to settle first, then stops it —
-            // stopping before the launch reaches the lane would let the
+            // that waits for the orphan to settle first, then stops it.
+            // Stopping before the launch reaches the lane would let the
             // orphan land after us and run forever. A launch that
-            // already failed needs no cleanup — the guards stand down on
-            // their own — so only cancellation reaps.
+            // already failed needs no cleanup. The guards stand down on
+            // their own, so only cancellation reaps.
             Task.detached { [weak self] in
                 _ = try? await launchTask.value
                 self?.stopIfCurrent(generation: generation, process: process)
@@ -853,14 +854,14 @@ public final class XraySession: @unchecked Sendable {
     /// Starts a source like `start(_:options:)`, but gives up if the
     /// engine is not up within `deadline` (seconds) and stops the
     /// half-started instance before throwing. Use from providers, where the system
-    /// kills a start that overstays its time budget — a thrown error is
+    /// kills a start that overstays its time budget. A thrown error is
     /// recoverable, a watchdog kill is not.
     ///
     /// The launch runs detached so the timeout can truly abandon it: a
     /// child task would pin the group until the engine answered, which
     /// is exactly what the deadline refuses to wait for. If the
     /// deadline wins, the orphaned launch is left to settle and then
-    /// stopped in the background — but only when nothing newer began
+    /// stopped in the background, but only when nothing newer began
     /// since, so a follow-up start is never killed by a stale timeout.
     /// `connectedSince` is stamped only when the launch itself
     /// succeeded, never on the timeout path. Cancelling this call
@@ -891,7 +892,7 @@ public final class XraySession: @unchecked Sendable {
             }
         }
         // Race the launch against the deadline with two detached tasks
-        // and a first-wins gate — deliberately not a task group. A group
+        // and a first-wins gate, deliberately not a task group. A group
         // waits for every child on exit, so a wedged launch would wedge
         // this call past the deadline: exactly what the deadline exists
         // to refuse. The loser is abandoned; a timed-out launch settles
@@ -960,7 +961,7 @@ public final class XraySession: @unchecked Sendable {
                 box.continuation = nil
                 return pending
             }
-            // A cancelled call refuses to wait for the orphan — same
+            // A cancelled call refuses to wait for the orphan. Same
             // settle-first cleanup as the timeout, then out at once.
             // A post-cancel win still flows through the gate below and
             // stamps nothing, because the continuation is already gone.
@@ -1100,7 +1101,7 @@ public final class XraySession: @unchecked Sendable {
                     // Every non-tun inbound listens on a socket: flag a
                     // missing, malformed, out-of-range, or duplicate port
                     // here instead of at engine traffic time. `tun` is
-                    // skipped deliberately — the engine ignores `port`
+                    // skipped deliberately. The engine ignores `port`
                     // for it, so flagging one would be noise.
                     let port: Int? = switch rawPort {
                     case .int(let port): port
@@ -1128,7 +1129,7 @@ public final class XraySession: @unchecked Sendable {
                 guard !isTun, let listen = entry["listen"]?.stringValue else {
                     // `tun` is exempt: the engine ignores `listen` for
                     // it, so demanding one would be noise. Every other
-                    // inbound listens on a socket — flag a missing one
+                    // inbound listens on a socket. Flag a missing one
                     // here instead of at engine traffic time.
                     if !isTun {
                         problems.append(
@@ -1166,7 +1167,7 @@ public final class XraySession: @unchecked Sendable {
     }
 
     /// Fetches a subscription feed, unwraps it, tops up geo assets, and
-    /// launches — the whole provider start in one call. The feed is
+    /// launches. This covers the whole provider start in one call. The feed is
     /// fetched fresh every call: nothing is cached, nothing
     /// auto-refreshes. `http(s)` requires status 200; anything else
     /// (including `file:` URLs, handy for tests and bundled feeds) is
@@ -1181,7 +1182,7 @@ public final class XraySession: @unchecked Sendable {
     /// wait): a declared or actual body past it throws before anything
     /// is decoded, so a hostile feed can't park memory. The top-up scans
     /// the feed text and the typed options without running `transform`,
-    /// so the launch assembles exactly once — references a transform
+    /// so the launch assembles exactly once. References a transform
     /// would inject are still caught by the launch-time gate instead.
     /// Keep transforms idempotent regardless: assembly may run them in
     /// other paths.
@@ -1220,7 +1221,7 @@ public final class XraySession: @unchecked Sendable {
                 data.reserveCapacity(Int(expected))
             }
             // Chunked: checking the cap per byte on a hostile multi-MB
-            // body still walks every byte — accumulate in 4 KiB pieces
+            // body still walks every byte. Accumulate in 4 KiB pieces
             // and check per piece instead.
             var chunk = [UInt8]()
             chunk.reserveCapacity(4096)
@@ -1278,7 +1279,7 @@ public final class XraySession: @unchecked Sendable {
             // feed); the explicit directory is the last resort.
             // One decode for the whole top-up: the asset lookup and both
             // reference scans below share it, and the launch's own build
-            // parses once more for validation — two parses total of a
+            // parses once more for validation. Two parses total of a
             // capped feed instead of four. A raw link feed decodes to
             // nil, which every scan below already treats as "no JSON".
             let feed = Self.tolerantDict(from: unwrapped)
@@ -1314,14 +1315,14 @@ public final class XraySession: @unchecked Sendable {
     // MARK: - Private
 
     /// Geo databases a launch will need, read from the once-decoded feed
-    /// plus the typed options — without converting, transforming, or
+    /// plus the typed options, without converting, transforming, or
     /// gating, so the remote start assembles exactly once. A JSON feed is
     /// scanned for `geosite:`/`geoip:` references in its routing and
     /// dns sections; a raw link feed converts to outbounds, which carry
     /// no references, so only the options matter there. References a
     /// `transform` would inject are not visible here: they are still
     /// caught by the launch-time gate, which refuses to run without
-    /// them — keep transforms out of the asset path, or pre-fetch
+    /// them. Keep transforms out of the asset path, or pre-fetch
     /// those databases yourself.
     private static func referencedDatabases(feed: XrayJSONObject?, options: XraySessionOptions) -> [XrayGeoDatabase] {
         var names: Set<String> = []
@@ -1349,8 +1350,8 @@ public final class XraySession: @unchecked Sendable {
                 }
             }
         }
-        // Sorted: deterministic download order, deterministic logs —
-        // the Set above would wander between runs otherwise.
+        // Sorted: deterministic download order, deterministic logs.
+        // The Set above would wander between runs otherwise.
         return names.compactMap(XrayGeoDatabase.init).sorted { $0.rawValue < $1.rawValue }
     }
 
@@ -1364,7 +1365,7 @@ public final class XraySession: @unchecked Sendable {
 
     /// External data files a remote launch will need: the same scan as
     /// `referencedDatabases`, but for `ext:` filenames, which no
-    /// downloader can fetch — the top-up checks them for existence
+    /// downloader can fetch. The top-up checks them for existence
     /// instead of downloading them.
     private static func referencedExternalFiles(feed: XrayJSONObject?, options: XraySessionOptions) -> [String] {
         var files: Set<String> = []
@@ -1397,8 +1398,8 @@ public final class XraySession: @unchecked Sendable {
     /// Fail-fast geo database check over the final, post-transform
     /// document: what the routing and dns sections reference must exist
     /// wherever the engine will look for it. The document's `env` counts
-    /// first, so an asset path shipped in it overrides the defaults —
-    /// same precedence as the engine's own lookup, which checks the
+    /// first, so an asset path shipped in it overrides the defaults.
+    /// Same precedence as the engine's own lookup, which checks the
     /// document environment, then the process environment, before the
     /// fixed fallback directories.
     private static func checkGeoAssets(in config: XrayJSONObject) throws {
@@ -1468,11 +1469,11 @@ public final class XraySession: @unchecked Sendable {
     /// A document of only passthrough outbounds (`freedom`,
     /// `blackhole`, `dns`, `loopback`) has no proxy, and resolving
     /// `.proxy` to `direct` would silently send tunnel traffic around
-    /// the tunnel — so the caller throws instead of aliasing.
+    /// the tunnel. The caller throws instead of aliasing.
     private static func ensureProxyTag(in config: inout XrayJSONObject) -> String? {
         guard case .array(var outbounds) = config["outbounds"], !outbounds.isEmpty else { return nil }
         let passthrough: Set<String> = ["freedom", "blackhole", "dns", "loopback"]
-        // No `?? outbounds.startIndex` fallback here — see the doc
+        // No `?? outbounds.startIndex` fallback here. See the doc
         // comment: an unqualified winner must fail, never alias.
         guard let index = outbounds.firstIndex(where: { outbound in
             guard case .object(let entry) = outbound else { return false }
@@ -1498,7 +1499,7 @@ public final class XraySession: @unchecked Sendable {
     /// `dns-out` (dns) outbounds when the routing rules reference
     /// them but the document does not define them. A `final`
     /// destination arrives as a trailing match-all rule, so it is
-    /// covered by the same scan — no special case.
+    /// covered by the same scan. No special case.
     private static func ensureStandardOutbounds(in config: inout XrayJSONObject) {
         guard case .object(let routing) = config["routing"],
               case .array(let rules) = routing["rules"] else { return }
@@ -1531,25 +1532,25 @@ public final class XraySession: @unchecked Sendable {
     /// fall through to `final` (or the proxy) instead of the local
     /// resolver. Appends one rule covering every relay tag no rule
     /// already claims, and creates the routing section when the document
-    /// has none. A `dns` section is deliberately not required — the relay
+    /// has none. A `dns` section is deliberately not required. The relay
     /// forwards to its own configured address either way, and the route
     /// is about the relay's traffic, not the section. Runs after the
     /// transform so transform-added relays are covered; runs before the
     /// standard-outbound backfill so a referenced `dns-out` always
     /// exists. An explicit route for a tag always wins over this
-    /// default — only unclaimed tags are appended.
+    /// default. Only unclaimed tags are appended.
     ///
-    /// Only inbounds that quack like a DNS relay are routed: the remote
+    /// Only inbounds shaped like a DNS relay are routed: the remote
     /// `settings.port` or the local `port` must be 53 (either as a
     /// number or as text). The same inbound type doubles as a
     /// transparent redirect, and routing a port-80/443 redirect into
-    /// `dns-out` would hijack non-DNS traffic — so a fully-configured
+    /// `dns-out` would hijack non-DNS traffic. A fully-configured
     /// redirect to any other port is left alone. An inbound with no
     /// `settings` at all is treated as a relay: there is nothing to
     /// redirect with, so it can only be the DNS use. The `dns-out`
     /// created by the backfill is a bare protocol-plus-tag skeleton,
     /// and that is enough: the engine needs no `settings` on a dns
-    /// outbound (verified — a document carrying exactly this skeleton
+    /// outbound (verified: a document carrying exactly this skeleton
     /// launches).
     private static func ensureDNSRelayRoute(in config: inout XrayJSONObject) {
         guard case .array(let inbounds) = config["inbounds"] else { return }
@@ -1595,7 +1596,7 @@ public final class XraySession: @unchecked Sendable {
             if value?.stringValue == "53" { return true }
         }
         // No `settings` at all: nothing to redirect with, so the DNS
-        // use is the only one left — but a settings-carrying inbound
+        // use is the only one left. A settings-carrying inbound
         // to any other port is a redirect, not a relay.
         return entry["settings"] == nil
     }
@@ -1612,9 +1613,8 @@ public final class XraySession: @unchecked Sendable {
     }
 
     /// The last lifecycle notes this session recorded, oldest first,
-    /// capped at 200 entries: launches, byte counts, failures. A flight
-    /// recorder for the package side — what it did, not what the engine
-    /// saw. For engine output, see `recentEngineLogs`.
+    /// capped at 200 entries: launches, byte counts, failures. A history
+    /// of package-side actions, not engine output. For engine output, see `recentEngineLogs`.
     public func recentLogs(limit: Int = 200) -> [String] {
         stateLock.withLock { Array(_entries.suffix(max(0, limit))) }
     }
@@ -1622,12 +1622,12 @@ public final class XraySession: @unchecked Sendable {
     /// Tails the engine's own log file named by the last launched
     /// document: the `access` / `error` paths in its log section. Paths
     /// are adopted only on a successful launch, so this tails the
-    /// current run — a failed launch keeps the previous run's tail. The
+    /// current run. A failed launch keeps the previous run's tail. The
     /// engine only writes when the document points it at files, so a
     /// `stdout`, `stderr`, `none`, or missing path throws `.invalidInput`
     /// naming the fix. Reads at most the trailing 256 KiB, so a verbose
     /// access log can't blow up the caller. The bridge exposes no log
-    /// stream, so this is file tailing — the only engine output there is.
+    /// stream, so this is file tailing, the only engine output there is.
     public func recentEngineLogs(_ kind: XrayEngineLogKind = .error, lines: Int = 100) throws -> [String] {
         let path: String? = stateLock.withLock {
             switch kind {
@@ -1675,7 +1675,7 @@ public final class XraySession: @unchecked Sendable {
         // `none`, `stdout`, and `stderr` are streams, not files: nothing
         // to tail, so they record as missing and `recentEngineLogs`
         // throws the "point at a file" guidance instead of a read error.
-        // Compared case-insensitively — the engine treats `STDERR` the
+        // Compared case-insensitively. The engine treats `STDERR` the
         // same as `stderr`, so the filter must too.
         guard let value, !value.isEmpty else { return nil }
         let lowered = value.lowercased()

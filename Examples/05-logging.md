@@ -1,21 +1,21 @@
-# 05 — Logging: writing the log and reading it back
+# 05. Logging: writing the log and reading it back
 
-Two independent streams: your sink (every line, live) and the engine's
-log files (persisted, tailed later). Set up both; they answer different
-questions.
+Two independent streams exist. Your sink gets every line live. The
+engine's log files persist for later tailing. Set up both. They answer
+different questions.
 
-## Step 1 — The live sink
+## Step 1. The live sink
 
 ```swift
 // Passed once, called per line on the caller's thread: keep it cheap
-// and thread-safe. Optional — without it, lines go to the ring buffer
+// and thread-safe. Optional. Without it, lines go to the ring buffer
 // only (Step 3 still works for recent history).
 let session = engine.newSession { line in
     print("[xray]", line)
 }
 ```
 
-For a file-backed sink, append under your own serial queue — never block
+For a file-backed sink, append under your own serial queue. Never block
 the caller:
 
 ```swift
@@ -25,9 +25,9 @@ let session = engine.newSession { line in
 }
 ```
 
-## Step 2 — The engine's log files
+## Step 2. The engine's log files
 
-The sink is live-only; persistence is the `log` section's job. Point it
+The sink is live-only. Persistence is the `log` section's job. Point it
 at files in the assembly (or `options`) and the engine writes there:
 
 ```swift
@@ -35,16 +35,17 @@ var a = engine.assembler(.shareLinks(feed))
 // .warning keeps the files small; .debug is for chasing one bug, then off.
 a.log = engine.log(
     level: .warning,          // XrayLogLevel: .debug .info .warning .error .none
-    access: accessFile.path, // connection log — large; omit unless debugging
-    error: errorFile.path     // error log — the one forensics reads
+    access: accessFile.path, // connection log. Large; omit unless debugging
+    error: errorFile.path     // error log. The one forensics reads
 )
 ```
 
-Levels are engine verbosity, not routing: `.none` writes nothing,
-`.error` only failures. Access logs grow fast — ship `.warning` +
-error-file by default, escalate per session when a user reports a drop.
+Levels set engine verbosity, not routing. `.none` writes nothing.
+`.error` writes only failures. Access logs grow fast. Ship `.warning` plus
+the error file by default, and escalate per session when a user reports
+a drop.
 
-## Step 3 — Reading back
+## Step 3. Reading back
 
 ```swift
 // The ring: last 200 lifecycle notes (launches, stops, gates), no files
@@ -52,15 +53,15 @@ error-file by default, escalate per session when a user reports a drop.
 session.recentLogs()
 
 // The engine's own files, tailed from disk. Throws .invalidInput naming
-// the file when the running document never set that path — the common
+// the file when the running document never set that path. The common
 // cause is launching raw JSON with no "log" section.
 let errors = try session.recentEngineLogs(.error, lines: 100)   // default kind
 let access = try session.recentEngineLogs(.access, lines: 50)
 ```
 
-Behavior that surprises once:
+Behaviors to know:
 
-- `stop()` does NOT clear the recorded paths — the tail survives for the
+- `stop()` does NOT clear the recorded paths. The tail survives for the
   post-mortem screen. The next `start` overwrites them with its own
   document's paths.
 - Every launch path records: assembly, raw JSON (parsed best-effort for
@@ -68,7 +69,7 @@ Behavior that surprises once:
 - Tails are capped (256 KiB from the end) so a gigabyte access log
   cannot blow up the reader.
 
-## Step 4 — The disconnect report
+## Step 4. The disconnect report
 
 ```swift
 func disconnectReport() -> String {
@@ -79,6 +80,6 @@ func disconnectReport() -> String {
 }
 ```
 
-Attach this to the feedback email / crash report. It is usually enough
-to distinguish server-dead, network-dead, and app-killed without asking
+Attach this to the feedback email or crash report. It usually
+distinguishes server-dead, network-dead, and app-killed without asking
 the user anything.

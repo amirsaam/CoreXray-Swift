@@ -1,7 +1,7 @@
 import Foundation
 
 // One-shot engine questions and lifecycle primitives on the shared instance.
-// No validation needed here — these are direct readings and the launch/stop
+// No validation is needed here. These are direct readings. The launch/stop
 // pair `XraySession` funnels into.
 
 extension Xray {
@@ -18,7 +18,7 @@ extension Xray {
     /// Starts this process's engine instance with the given Xray JSON
     /// configuration. Blocks until the engine is up. This is the raw
     /// primitive: launching over a running instance throws the engine's
-    /// already-running refusal instead of replacing — stop first, or start
+    /// already-running refusal instead of replacing. Stop first, or start
     /// through `XraySession`, which replaces by stopping first.
     public func launch(_ configuration: String) throws {
         try LifecycleCalls.launch(configuration)
@@ -48,7 +48,7 @@ extension Xray {
     /// Each bridge call runs on its own thread with a short leash: a wedged
     /// bridge call never returns, so an unbounded wait would hang the
     /// caller the same way. Past the timeout this throws `.timedOut`
-    /// instead of hanging — treat that as wedged, not idle. The stuck
+    /// instead of hanging. Treat that as wedged, not idle. The stuck
     /// thread is abandoned (it exits if the bridge ever answers); a wedged
     /// bridge plus a polling watchdog therefore accumulates one sleeper
     /// per poll, which is why wedged means restart the process.

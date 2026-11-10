@@ -1,16 +1,16 @@
 import Foundation
 
 // Port discovery on the shared instance. `findAvailablePorts` is the cheap
-// snapshot for anything that just needs a free number; `verifyAvailablePorts`
+// snapshot for anything that needs a free number; `verifyAvailablePorts`
 // adds the local bind check for ports the engine will actually listen on.
 
 extension Xray {
     /// Asks the engine for TCP ports nothing else on this machine is
-    /// currently listening on, by checking. Nothing is killed, closed, or
-    /// reserved: the answer is a snapshot, and a port can be taken between
-    /// the answer and your launch. Handy for the inbound `port` fields of
-    /// configurations that listen locally, so every launch can sit on a
-    /// fresh pocket instead of a hardcoded port.
+    /// currently listening on, by checking. It reserves nothing. The answer
+    /// is a snapshot, and a port can be taken between the answer and your
+    /// launch. Use for the inbound `port` fields of configurations that
+    /// listen locally, so every launch can sit on a fresh port instead of
+    /// a hardcoded one.
     public func findAvailablePorts(count: Int = 1, excluding: [Int] = []) throws -> [Int] {
         guard count > 0 else {
             throw XrayError.invalidInput("findAvailablePorts needs a count of at least 1")
@@ -25,7 +25,7 @@ extension Xray {
     }
 
     /// Same as `findAvailablePorts`, but every returned port also passes a
-    /// real TCP bind against 127.0.0.1 first — the engine's answer is a
+    /// real TCP bind against 127.0.0.1 first. The engine answer is a
     /// snapshot, and something else can grab a port between the answer and
     /// your launch. Ports that fail the bind are skipped (and never
     /// returned twice); throws `.bridgeFailed` when not enough bindable

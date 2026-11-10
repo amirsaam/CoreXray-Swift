@@ -1,9 +1,9 @@
 import Foundation
 
-// The easy path: describe what you want, get a working document. XrayAssembly
-// owns the whole shape — entries, standards, tag resolution — and delegates
-// to the XraySession pipeline, so everything below composes with the low-level
-// options rather than replacing them.
+// Describe what you want. Get a working document.
+// XrayAssembly sets entries and standards. It resolves tags.
+// It delegates to the XraySession pipeline.
+// Everything below composes with the low-level options.
 
 /// A local SOCKS entry point. Present by default; set to nil for a
 /// document without one.
@@ -152,9 +152,9 @@ public struct XrayAssemblyDNSRelay: Sendable {
 /// What an assembly builds from: a server description, never a finished
 /// document. Share links are converted through the engine; a single
 /// outbound object is wrapped as the outbounds as-is. A full
-/// configuration document is rejected — that already *is* a runnable
-/// document, so run it through `Xray.shared.configuration(.json(...))` or
-/// hand it to a session instead of assembling around it.
+/// configuration document is rejected. That document already runs.
+/// Pass it to `Xray.shared.configuration(.json(...))` or hand it
+/// to a session instead of assembling around it.
 public enum XrayAssemblySource: Sendable {
     /// Proxy share links: one `vless://`, `trojan://`, `ss://`, or
     /// `socks://` link, many newline-separated, or a base64 blob of
@@ -198,24 +198,24 @@ public struct XrayAssembly {
     /// XrayMetrics listener, the `stats` section, and the policy switches
     /// `XrayTrafficMonitor` reads. Nil means no traffic counters.
     public var metricsPort: Int?
-    /// SOCKS-inbound credentials, forwarded to the session options. Guards
-    /// every SOCKS inbound (including transform-added ones) — or rejects
-    /// the document when none exists to guard.
+    /// SOCKS-inbound credentials, forwarded to the session options. It guards
+    /// every SOCKS inbound (including transform-added ones).
+    /// It rejects the document when none exists to guard.
     public var credentials: XrayCredentials?
     /// Extra process-environment entries for the launched document
     /// (`xray.location.asset`, `xray.tun.fd`), forwarded to the session
     /// options. Document values win over these on key conflicts.
     public var environment: [String: String]?
     /// Fail-fast geo gate over the assembled document. Disable only when
-    /// you checked the databases yourself — references the engine cannot
+    /// you checked the databases yourself. References the engine cannot
     /// resolve fail at traffic time, not at launch.
     public var geoCheck: Bool
-    /// Where assembly's routing warnings go (unknown outbound tags,
-    /// match-alls starving `final`). Assembly builds on a throwaway
-    /// session, so without this the warnings die with it — with it,
-    /// they reach your log. Nil (default) drops them.
+    /// Where assembly routing warnings go. It reports unknown outbound tags
+    /// and match-alls starving `final`. Assembly builds on a throwaway
+    /// session. Without this callback the warnings die with it.
+    /// With it they reach your log. Nil (default) drops them.
     public var diagnostics: ((String) -> Void)?
-    /// Final patch after everything else — it sees the fully assembled
+    /// Final patch after everything else. It sees the fully assembled
     /// document, so it overrules every setting above, including sniffing
     /// and routing. Same position as the low-level transform, for
     /// schema-exotic keys.
@@ -285,8 +285,8 @@ public struct XrayAssembly {
         return try session.build(pipelineSource, options: XraySessionOptions(
             sniffing: sniffing,
             transform: { dict in
-                // Append: conversion emits no inbounds, and the TUN
-                // entry (if any) is already here — never replace.
+                // Append only. Conversion emits no inbounds.
+                // The TUN entry (if any) is already here. Never replace it.
                 var inbounds = dict["inbounds"]?.arrayValue ?? []
                 if let socks {
                     inbounds.append(.object(socks.wireObject))
@@ -303,7 +303,7 @@ public struct XrayAssembly {
                 // The session pipeline already injected this sniffing
                 // into the conversion inbounds; the appended entries
                 // above missed that pass, so inject again. Entries
-                // with their own sniffing keep it — inject skips them.
+                // with their own sniffing keep it. Inject skips them.
                 sniffing?.inject(into: &dict)
                 if let remarks {
                     dict["remarks"] = .string(remarks)
@@ -358,7 +358,7 @@ public struct XrayAssembly {
 // Value factories for local inbound entries. Ports are checked here so a
 // typo fails fast instead of surfacing as an engine bind error. The
 // check runs at construction: the returned values stay mutable, so a
-// port changed afterwards is on the caller — re-check it before launch.
+// A port changed afterwards belongs to the caller. Re-check it before launch.
 extension Xray {
     public func socksEntry(
         tag: String = "socks-in",

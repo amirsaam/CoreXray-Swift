@@ -53,7 +53,7 @@ Maintainers: versioning, the core-update flow, and the repo layout live in [`CON
 macOS 13+, iOS 15+, tvOS 17+, Swift 5.9 / Xcode 15+. The framework carries no
 watchOS or visionOS slices because XTLS does not build those, so the package
 declares no support for them either. Since the framework is static, linking
-needs `Security.framework` and `libresolv`; the package wires both through its
+needs `Security.framework` and `libresolv`; the package links both through its
 own target settings, so nothing is required of your app target. On the first
 resolve of a version SwiftPM fetches the ~100 MB zip from XTLS, checks the
 checksum, and unpacks it; later builds on the same machine reuse the cached
@@ -79,23 +79,23 @@ In `Package.swift`:
 Pick Up To Next Minor Version in Xcode's requirement dropdown (or write
 `.upToNextMinor` yourself as above). Versions here are `Epoch.Major.Minor`:
 
-- **Epoch** is the XTLS/libXray release the framework came from, dots
+- Epoch is the XTLS/libXray release the framework came from, dots
   removed: upstream `v26.10.31` is epoch `261031` (each group padded to two
   digits, so `26.9.5` would be `260905` and epochs stay chronologically
   sortable).
-- **Major** is our own package major: a breaking Swift API reshape.
-- **Minor** is our own package minor: everything else — additions and fixes.
+- Major is our own package major: a breaking Swift API reshape.
+- Minor is our own package minor: everything else, additions and fixes.
 
 So `261031.1.0` means core 26.10.31 with Swift code 1.0. The trailing pair
 is a fingerprint of the Swift code only: if the core moves but the Swift
-layer is untouched, the numbers carry over — `26115.1.0` following
+layer is untouched, the numbers carry over, `26115.1.0` following
 `261031.1.0` tells you the Swift code is unchanged. A Swift change on the
 same core bumps the tail instead: `261031.1.0` → `261031.1.1`.
 
 `.upToNextMinor(from: "261031.1.0")` allows `>=261031.1.0, <261031.2.0`, so
 Swift fixes on your core arrive on the next resolve, while a Swift major
 (`261031.2.0`) or a new core epoch (a new, much larger major number) never
-sneaks in — both stay a deliberate decision you make by changing the string.
+sneaks in. Both stay a deliberate decision you make by changing the string.
 `.exact` is the stricter alternative if you want nothing to move without an
 edit.
 
@@ -105,7 +105,7 @@ cached framework. Resolving at, say, `261031.1.0` embeds exactly the engine
 that tag's `Package.swift` names. Nothing binary is committed here.
 
 Tags under the previous date-based scheme (`26.10.31`, `v26.10.31`) were
-removed and no longer resolve — move to a current `Epoch.Major.Minor`
+removed and no longer resolve. Move to a current `Epoch.Major.Minor`
 version.
 
 ## Importing
@@ -163,46 +163,47 @@ is commentary.
    transport into the Go runtime. Calls never interleave, which is why
    concurrent `start`/`stop` from two threads is a logic race this package
    does not referee: keep each session on one serial context. The lane is
-   also why a wedged engine call cannot be cancelled from Swift — bounds
+   also why a wedged engine call cannot be cancelled from Swift. Bounds
    (`deadline:`, `health()`'s ~5s cap) abandon the wait, never the call.
-3. **Configuration is a JSON document; the package is a typed funnel into
-   it.** The engine accepts exactly one thing: a complete JSON config. Every
+3. **Configuration is a JSON document; the package builds it from typed values.**
+   The engine accepts exactly one thing: a complete JSON config. Every
    factory, assembly, and option exists to build that document without
-   spelling JSON by hand — and `transform`/`patch` exist for the keys the
-   funnel does not know. When in doubt, `build()` and read `config.json`:
+   writing JSON yourself, and `transform`/`patch` exist for the keys the
+   typed values do not cover. When in doubt, `build()` and read `config.json`:
    the document is always inspectable.
 4. **Environment travels in the document.** The engine applies the
    document's `env` map into its own process environment at launch. That is
    the documented carrier for `xray.location.asset` (geo directory),
-   `xray.tun.fd` (TUN descriptor), and similar engine settings — and it is
+   `xray.tun.fd` (TUN descriptor), and similar engine settings. That is also
    why launching a descriptor-less TUN document clears stale `xray.tun.fd`
    from the process: the engine never unsets what a previous launch set.
 5. **Geo data is lazy and external.** The engine resolves `geosite:` /
    `geoip:` at traffic time from `.dat` files it finds via `env`, and
-   complains about nothing until then. The package's gate exists because the
-   engine's silence would otherwise surface as dead routing: references are
-   checked at build, databases are fetched by `ensureAssets`, and plain
+   complains about nothing until then. The package's gate exists because
+   missing files would otherwise cause dead routing with no error to catch:
+   references are checked at build, databases are fetched by `ensureAssets`,
+   and plain
    domains/IPs never need any of it.
 6. **16 MiB is the engine's own ceiling.** Requests over 16 MiB are rejected
-   before crossing the bridge — feeds, raw requests, everything. A
+   before crossing the bridge, feeds, raw requests, everything. A
    well-formed giant request fails exactly as it would remotely, without
    paying for the round trip.
 
 ## API reference
 
 Everything below is reachable after `import CoreXray`. Values are built through
-factories on `Xray.shared` — value inits are internal, so user code passes
+factories on `Xray.shared`. Value inits are internal, so user code passes
 values to functions and never spells a type name to construct one. Blocking
 calls expect a
-background task from UI code (or use the async variants). Failures surface as
+background task from UI code (or use the async variants). Failures arrive as
 `XrayError` with five cases (`.engineFailed`, `.bridgeFailed`,
 `.invalidInput`, `.geoAssets`, `.timedOut`), catchable like any Swift error.
 
 ### `XrayAssembly`: one value in, one document out
 
-`XrayAssembly` is the easy path and the one most apps should use. You
-describe intent — where the proxy comes from, which entries to open, where
-traffic goes — and `assemble()` returns a launchable `XrayConfig`. No tag
+`XrayAssembly` is the path most apps should use. You
+describe intent, where the proxy comes from, which entries to open, where
+traffic goes, and `assemble()` returns a launchable `XrayConfig`. No tag
 bookkeeping, no merge closures. Every field is optional except `source`:
 
 ```swift
@@ -255,11 +256,11 @@ Three promises hold for every assembly:
 - The source is always a server description, never a finished document.
   `.shareLinks` converts links into outbounds; `.outboundJson` wraps one
   outbound object as the outbounds. A full document has no case here at
-  all — it goes through `Xray.shared.configuration(.json(...))` or
+  all. It goes through `Xray.shared.configuration(.json(...))` or
   straight to a session instead of being assembled around.
 - The assembled document keeps the converted proxy tag (typically the link's
   `#fragment`), appends anything it derived, and never deletes what
-  conversion produced — a whole `outbounds` key in `patch` would be the one
+  conversion produced, a whole `outbounds` key in `patch` would be the one
   way to lose the real server, so don't put one there.
 - Destinations are logical, not tags: `.proxy` resolves to the converted
   outbound's real tag (assigned `"proxy"` if it had none), `.direct` /
@@ -275,7 +276,7 @@ Entries are the mode. `socks` (default `127.0.0.1:10808`, tagged `socks-in`),
 over UDP, feeding the `dns-out` outbound) open the local entry points; set
 any to nil to drop it. Proxy mode is entries on the loopback interface; TUN
 mode is setting `tun` to an `XrayTunEntry`, which appends a real `tun`
-inbound (tagged `"tunIn"` by default) that captures device-wide — both can
+inbound (tagged `"tunIn"` by default) that captures device-wide. Both can
 coexist. Each entry carries its own `auth` (`XrayCredentials`, nil means
 open); the low-level `XraySessionOptions.credentials` still exists for hand-built
 sessions, guarding every SOCKS inbound at once and leaving the tun inbound
@@ -283,17 +284,17 @@ alone (tun takes no auth: packets, not connections).
 
 Entry details:
 
-- `socksEntry(tag:listen:port:udp:auth:sniffing)` — defaults
+- `socksEntry(tag:listen:port:udp:auth:sniffing)`. Defaults
   `"socks-in"`, `"127.0.0.1"`, `10808`, `true`, nil, and nil sniffing (the
   entry inherits the assembly's through the pipeline; pass an explicit
   value to keep your own). Open entries write `auth: "noauth"`; guarded
   ones write `auth: "password"` with the pair in `users`.
-- `httpEntry(tag:listen:port:auth:sniffing)` — defaults `"http-in"`,
+- `httpEntry(tag:listen:port:auth:sniffing)`. Defaults `"http-in"`,
   `"127.0.0.1"`, `10809`, nil, and nil sniffing (same inheritance as the
   SOCKS entry). Open entries carry
   no `settings` key at all; guarded ones write the pair in `accounts` (the
   HTTP inbound has no `auth` field in the engine schema).
-- `dnsRelay(tag:listen:port:address:remotePort:network:)` — defaults
+- `dnsRelay(tag:listen:port:address:remotePort:network:)`. Defaults
   `"dns-in"`, `"127.0.0.1"`, `10810`, `"1.1.1.1"`, `53`, `"udp"`. It has no
   sniffing of its own; the assembly's `sniffing` covers it like any inbound
   without settings.
@@ -313,14 +314,14 @@ public enum XrayAssemblySource { case shareLinks(String); case outboundJson(Stri
 
 `XrayConfigSource` is what a session starts from: full JSON text or share
 links. `XrayAssemblySource` is what an assembly builds from: share links or
-one outbound object — never a full document, which goes through
+one outbound object, never a full document, which goes through
 `configuration(.json(...))` instead. (`decodeSubscription` and
 `generateAgeKeyPair` live on the shared instance: `Xray.shared`.)
 
 - `configuration(.json(_))` stores text untouched. No validation happens here; that is
   `validate()`'s job.
 - `configuration(.shareLinks(_):ageSecret:)` accepts `vless://`,
-  `trojan://`, `ss://`, and `socks://` links — one link,
+  `trojan://`, `ss://`, and `socks://` links, one link,
   newline-separated mixed feeds, or a base64 blob of those. Verified
   against the bundled engine: `vmess://`, `hysteria2://`, `wireguard://`,
   and `{"outbounds":[...]}` JSON blobs are dropped by its converter, so a
@@ -336,13 +337,13 @@ one outbound object — never a full document, which goes through
   reference whose file is missing or unreadable fails here, not at launch.
   The thrown error carries the engine's parser complaint or the gate's
   `.geoAssets` report, which is the cheapest way to reject bad user input.
-  It needs the engine stopped — while running, use
+  It needs the engine stopped. While running, use
   `validateOffline()`, which checks section names, outbound references, and
   tag/protocol presence without touching the engine.
 - `decodeSubscription` (on `Xray.shared`) unwraps a provider's Age-encrypted
   subscription export: text starting with the Age armor header is decrypted
   with `ageSecret`, and *any other text comes back unchanged*. It does not
-  parse links and does not base64-decode — a link list or a base64 blob goes
+  parse links and does not base64-decode. A link list or a base64 blob goes
   to `configuration(.shareLinks:ageSecret:)`, which handles both. (JSON
   blobs are not accepted there either; the bundled converter drops them.)
 
@@ -355,11 +356,11 @@ outbounds, so what you get back is already pruned to what this build can run.
 `XraySession` is the layer a VPN app holds onto. It owns the launch
 lifecycle with an optional log sink, and its `build` is the low-level path
 underneath assemblies: same pipeline, knob by knob, with `transform` running
-last for full control. Reach for it when an assembly hides something you need
-to do by hand. One session per engine — starting again replaces the running
+last for full control. Use it when an assembly hides something you need
+to do yourself. One session per engine. Starting again replaces the running
 instance.
 
-Concurrency: `XraySession` is `@unchecked Sendable` — safe to hold across `Task`
+Concurrency: `XraySession` is `@unchecked Sendable`, safe to hold across `Task`
 boundaries, with internal state behind a lock and bridge calls serialized on
 the transport lane. Keep each session on one serial context anyway:
 `logger` runs on the caller's thread, and interleaving two sessions'
@@ -409,7 +410,7 @@ try await session.start(.shareLinks(pastedText))
 try await session.validate(.json(savedJSON))
 
 // Deadline variant for providers: the system kills a start that overstays
-// its time budget, so give up first — a timed-out start stops what it began
+// its time budget, so give up first. A timed-out start stops what it began
 // (stop-if-current: a newer launch is never killed) before throwing
 // `.timedOut`, which the provider can catch and retry. If the engine never
 // answers at all the throw still arrives on time, and the orphan self-stops
@@ -418,7 +419,7 @@ try await session.validate(.json(savedJSON))
 try await session.start(.shareLinks(pastedText), deadline: 20)
 
 // One call for the whole provider start: fetch, unwrap, top up geo assets,
-// launch under a deadline. The feed is fetched fresh every call — nothing
+// launch under a deadline. The feed is fetched fresh every call. Nothing
 // cached, nothing auto-refreshed. Feeds are capped at the engine's own
 // 16 MiB request limit (`timeoutSeconds`, 30 by default, bounds the wait);
 // anything past the cap throws before decoding. assetDirectory becomes
@@ -449,21 +450,21 @@ inbound meets a `dns` section, credentials, then `transform` last, then the
 standard outbounds, then the geo asset check.
 
 `XraySessionOptions` fields and defaults: `sniffing` (nil), `transform` (nil),
-`routing` (nil — replaces any routing section already in the document),
-`credentials` (nil — when set, guards every SOCKS inbound and rejects a
+`routing` (nil, replaces any routing section already in the document),
+`credentials` (nil, when set, guards every SOCKS inbound and rejects a
 document with none as misconfiguration; the tun inbound is untouched),
-`tun` (nil — set to an `XrayTunEntry` for device-wide capture),
-`environment` (nil — entries merged into the document's `env`, the section
+`tun` (nil, set to an `XrayTunEntry` for device-wide capture),
+`environment` (nil, entries merged into the document's `env`, the section
 the engine turns into its own process environment at launch: use it for
 `xray.location.asset` and friends; keys already in the document win),
-`observatory` (nil — see `XrayObservatory` under traffic; setting it
+`observatory` (nil, see `XrayObservatory` under traffic. Setting it
 without `metricsPort` throws `.invalidInput` at build, because the probe
 answers are published on the metrics endpoint and would otherwise read
 empty forever),
-`geoCheck` (true — refuse to assemble a document whose routing or dns
+`geoCheck` (true, refuse to assemble a document whose routing or dns
 references `geosite:` / `geoip:` categories the engine has no readable
-database for), `dns` (nil — replaces any dns section), `fakeDNS` (nil —
-replaces any fakedns section), `log` (nil — replaces any log section).
+database for), `dns` (nil, replaces any dns section), `fakeDNS` (nil,
+replaces any fakedns section), `log` (nil, replaces any log section).
 
 Notes on the pieces:
 
@@ -473,7 +474,7 @@ Notes on the pieces:
   `routeOnly` (default false), `domainsExcluded` (default empty),
   `metadataOnly` (default false). Inbounds with their own settings keep
   them. (`probeURL` / `enableConcurrency` are `XrayObservatory` fields,
-  not sniffing — see the traffic section.)
+  not sniffing. See the traffic section.)
 - `transform` mutates the parsed configuration in place and (like
   `assembly.patch`, which holds the same last position) overrules
   everything, including sniffing and routing. It works on a typed
@@ -485,25 +486,25 @@ Notes on the pieces:
   doc.log?.loglevel?.stringValue // "error"
   ```
 - `logger` gets lifecycle notes (what is launching, byte counts of the final
-  JSON). Set it at init or any time after. Every note also lands in the
-  `recentLogs()` ring buffer (last 200, oldest first) — the flight recorder
-  for the package side.
-- `connectedSince` stamps when the running instance came up (nil before the
+  JSON). Set it at init or any time after. Every note is also stored in the
+  `recentLogs()` ring buffer (last 200, oldest first), a record of
+  the package side.
+- `connectedSince` records when the running instance came up (nil before the
   first start, nil after every stop). Pair it with traffic totals, which
   reset on every launch, for uptime math.
 - `recentEngineLogs(_ kind: XrayEngineLogKind, lines:)` tails the engine's own
   log file (`.access` / `.error`) named by the last launched document's log
   section. Paths are adopted only on a successful launch, so the tail
-  follows the run that actually launched — and the engine must be pointed
+  follows the run that actually launched. The engine must be pointed
   at files first
   (`log(access: path, error: path)`); anything else throws `.invalidInput`
   naming the fix. At most the trailing 256 KiB are read.
-- `XraySessionProviding` is the session's protocol surface for apps
+- `XraySessionProviding` is the session's protocol for apps
   that inject a mock in their own tests; `newSession()` returns the real
   thing.
 
-`Xray.shared.launch(_:)` / `Xray.shared.stop()` are the underlying primitives the session
-delegates to; prefer the session unless you are sure you want the bare calls.
+`Xray.shared.launch(_:)` / `Xray.shared.stop()` are the lower-level calls the session
+delegates to. Prefer the session unless you need the bare calls.
 
 ### `XrayRouting`: where traffic goes
 
@@ -523,7 +524,7 @@ Xray.shared.routing(
     ],
     final: .proxy  // catches whatever no rule matched; nil omits it.
     // The engine has no `final` field, so it is written as a trailing
-    // `network: "tcp,udp"` rule — every connection the engine routes is
+    // `network: "tcp,udp"` rule. Every connection the engine routes is
     // TCP or UDP. (A truly condition-less rule is rejected by the engine
     // as having no effective fields, hence the network condition.)
 )
@@ -536,11 +537,11 @@ Xray.shared.routing(
 `inboundTags`, and `destination`. Fields within a rule combine with AND,
 rules combine with OR. Every rule should carry a destination; rules without
 one write no `outboundTag` and match nothing useful. A rule with neither
-conditions nor a destination is rejected at build (`.invalidInput`) —
-the engine refuses empty rules, so the assembly fails fast instead.
+conditions nor a destination is rejected at build (`.invalidInput`).
+The engine refuses empty rules, so the assembly fails fast instead.
 
 `geosite:` / `geoip:` categories need the corresponding `.dat` files where
-the engine will look for its assets — and the assembly enforces that before
+the engine will look for its assets, and the assembly enforces that before
 anything launches (see [Geo databases](#geo-databases)). Turning a plain
 domain or IP list into a database lookup is the only thing that requires
 them; everything else routes without any database.
@@ -548,7 +549,7 @@ them; everything else routes without any database.
 ### `XrayDNS`, `XrayFakeDNS`, `XrayLog`: verbatim sections
 
 `dns`, `fakeDNS`, and `log` are verbatim like `routing`: what you declare is
-what lands, replacing anything already in the document. Empty collections and
+what is written, replacing anything already in the document. Empty collections and
 nil fields are omitted from the wire rather than written empty.
 
 ```swift
@@ -569,34 +570,34 @@ Xray.shared.log(
 )
 ```
 
-Servers take both engine forms — a bare address (`.plain`) or an address
+Servers take both engine forms, a bare address (`.plain`) or an address
 scoped to domains (`.detailed`). A complete document therefore assembles like
 this: `outbounds` arrive from conversion or your skeleton; `log`, `dns`,
 `fakedns`, and `routing` are typed options; entries and standards are derived;
-and anything schema-exotic rides in the typed tree via `transform`/`patch`.
+and anything schema-exotic is handled in the typed tree via `transform`/`patch`.
 
 ### Proxy mode vs TUN mode
 
 Proxy mode moves one app's traffic: the engine opens ports on your own device
 and traffic you deliberately send there goes through. On macOS a system proxy
-setting covers the whole machine; on iOS it covers your app's own requests —
-other apps are untouched, with zero system involvement and no entitlements.
+setting covers the whole machine; on iOS it covers your app's own requests.
+Other apps are untouched, with zero system involvement and no entitlements.
 
-TUN mode is device-wide capture through the engine's own `tun` inbound —
+TUN mode is device-wide capture through the engine's own `tun` inbound,
 the documented shape the published Xray clients run, verified against the
 stock engine (a `protocol: tun` document passes `validate()` and launches
 with a handed-off descriptor; a live test in the suite proves both). The
 engine reads packets off a TUN interface, and who owns that interface
 decides the setup:
 
-- **macOS**: the engine creates the interface itself from the entry's `name`
-  (e.g. `"utun10"`) — no descriptor needed, just route traffic at it via
+- On macOS, the engine creates the interface itself from the entry's `name`
+  (e.g. `"utun10"`). No descriptor is needed. Route traffic at it via
   `autoSystemRoutingTable` (e.g. `["0.0.0.0/0", "::/0"]`) so packets arrive.
   Creating a utun unprivileged fails with "operation not permitted", so the
   engine-running process needs the usual VPN privileges for this path.
-- **iOS**: the interface belongs to your NetworkExtension, so the provider
+- On iOS, the interface belongs to your NetworkExtension, so the provider
   reads its file descriptor and hands it over through
-  `XrayTunEntry(fileDescriptor:)` — the kit merges it into the document's `env`
+  `XrayTunEntry(fileDescriptor:)`. The kit merges it into the document's `env`
   as `xray.tun.fd`, the variable Xray-core reads from its own environment
   at launch. Nil descriptor, like nil entry, writes no `env` key: proxy-mode
   documents never carry tunnel state. The read itself is one call:
@@ -604,36 +605,36 @@ decides the setup:
   plain `NSObject`, no import needed) and returns the descriptor, throwing
   `.invalidInput` when the key path is absent or the value unusable. There
   is no public API for this value, so the helper uses private key-value
-  access — the only route available. Re-verify it every iOS release and keep
+  access. It is the only route available. Re-verify it every iOS release and keep
   it isolated to this call.
 
 `XrayTunEntry` fields, all defaulted: `tag` (`"tunIn"`), `listen`
-(`"127.0.0.1"`), `name` (nil — the engine's default), `mtu` (1500),
-`gateway` (nil — e.g. `["198.18.0.1/15", "fc00::1/64"]`; IPv4 only on
-macOS), `dns` (nil — XrayDNS servers the engine puts on the interface; the
+(`"127.0.0.1"`), `name` (nil, the engine's default), `mtu` (1500),
+`gateway` (nil, e.g. `["198.18.0.1/15", "fc00::1/64"]`; IPv4 only on
+macOS), `dns` (nil, XrayDNS servers the engine puts on the interface; the
 one TUN engine field that matters on Apple platforms, the Windows-only
-helpers are deliberately not exposed), `userLevel` (nil — level 0),
-`autoSystemRoutingTable` (nil — e.g. `["0.0.0.0/0", "::/0"]`),
-`autoOutboundsInterface` (nil — but the wire says `"auto"` when a routing
+helpers are deliberately not exposed), `userLevel` (nil, level 0),
+`autoSystemRoutingTable` (nil, e.g. `["0.0.0.0/0", "::/0"]`),
+`autoOutboundsInterface` (nil, but the wire says `"auto"` when a routing
 table is set without an explicit interface, mirroring the engine's own
 default from `TunConfig.Build`: the engine implies `"auto"` there, so the
-document shows what the engine will do. With no table the key stays absent
-— forcing `"auto"` there breaks descriptor hand-off, so the kit does not),
-`fileDescriptor` (nil), and `sniffing` (nil — inherits the session's through
+document shows what the engine will do. With no table the key stays absent,
+forcing `"auto"` there breaks descriptor hand-off, so the kit does not),
+`fileDescriptor` (nil), and `sniffing` (nil, inheriting the session's through
 the pipeline like any entry default). The entry carries no
-port and no auth — traffic arrives as packets, not connections — so keep
+port and no auth. Traffic arrives as packets, not connections, so keep
 any SOCKS listener on localhost *and* guarded when both modes coexist.
 
 One environment subtlety the kit handles: the engine applies the document's
 `env` entries into its own process at launch and never unsets them, so a
-descriptor from an earlier tunnel session would hijack the next fd-less
+descriptor from an earlier tunnel session would persist into the next fd-less
 launch. Assembling with a descriptor-less `XrayTunEntry` therefore clears
 `xray.tun.fd` (both spellings) from the process environment automatically.
 
 The provider half, all outside this package: set the tunnel network settings
 with default routes and XrayDNS pointing at the utun interface; read the
 interface's file descriptor; assemble with the descriptor and launch from
-inside the provider process — the engine must run where the interface lives
+inside the provider process. The engine must run where the interface lives
 (the extension on iOS, the app on macOS):
 
 ```swift
@@ -652,8 +653,8 @@ try Xray.shared.newSession().start(
 `validate` checks the tun document like any other, and `build` lets you
 inspect the exact document the provider will run before you ship it there.
 Installing the tunnel needs a VPN configuration the user approves once
-(Settings → General → VPN); proxy mode needs none of that, at the cost of
-dying with your app process.
+(Settings → General → VPN). Proxy mode needs none of that, but it stops
+with your app process.
 
 ### One-shot questions on `Xray`
 
@@ -673,26 +674,26 @@ Xray.shared.proxyConfiguration(_ source: XrayAssemblySource, remarks: String? = 
 - `version()` answers, for example, "26.10.29", the Xray-core build compiled
   into the framework. `health()` is the watchdog probe: false when nothing is
   running, true when an instance is up *and* answering, and a throw when the
-  bridge itself is wedged — each call is bounded at ~5 seconds (a wedged call
+  bridge itself is wedged. Each call is bounded at ~5 seconds (a wedged call
   throws `.timedOut`), so a stuck engine cannot hang the poll loop. Poll it
   on a timer; a throw means rebuild, not retry.
 - `findAvailablePorts` asks the engine for TCP ports nothing else on this
-  machine is currently listening on. Nothing is killed or reserved — it is a
+  machine is currently listening on. Nothing is killed or reserved. It is a
   check, and a port can be taken between the answer and your launch. Useful
-  for client configurations whose inbounds listen locally, since picking
-  hardcoded port ranges means collisions more often than not. `excluding`
+  for client configurations whose inbounds listen locally, since hardcoded
+  port ranges collide. `excluding`
   skips port numbers you already have.
 - `verifyAvailablePorts` goes one step further: every returned port also
   passes a real TCP bind against 127.0.0.1 first. The engine's answer is a
   snapshot, and something else can grab a port between the answer and your
-  launch — this closes that hole. Throws `.bridgeFailed` when not enough
+  launch. This closes that hole. Throws `.bridgeFailed` when not enough
   bindable ports turn up, `.invalidInput` for a count below 1. Prefer it for
   any port the engine will actually listen on (entries, metrics); the check
   is best-effort at call time, not a reservation.
 - `decodeSubscription` unwraps a provider's Age-encrypted subscription
   export: text starting with the Age armor header is decrypted with
   `ageSecret`, and *any other text comes back unchanged*. It does not parse
-  links and does not base64-decode — that is `configuration(.shareLinks:)`'s job,
+  links and does not base64-decode. That is `configuration(.shareLinks:)`'s job,
   which takes a single link, many newline-separated links, a base64 blob,
   or this function's output. Pass the
   `AGE-SECRET-KEY-...` string as `ageSecret` for encrypted exports.
@@ -704,7 +705,7 @@ Xray.shared.proxyConfiguration(_ source: XrayAssemblySource, remarks: String? = 
   code/region with rule and category counts next to it as `<database>.json`;
   `.geosite` maps to hostname databases, `.geoip` to IP ranges. The
   `database` name is the filename without extension (`"geosite"` for
-  `geosite.dat`); `directory` is the folder holding the `.dat`. Returns the
+  `geosite.dat`); `directory` is the folder holding the `.dat`. The call returns the
   inventory file's URL.
 
 ### Value factories on `Xray.shared`
@@ -737,19 +738,19 @@ Xray.shared.geoDownloader(geoIPURL:geoSiteURL:) -> XrayGeoDownloader
 Xray.shared.ensureAssets(for:databases:in:geoIPURL:geoSiteURL:) async throws -> URL
 ```
 
-`throws` marks the ones with a rule: ports must be 1–65535, the TUN
-descriptor non-negative, the ping timeout positive. `providerFileDescriptor`
+`throws` marks the ones with a rule: ports must be 1 to 65535, the TUN
+descriptor non-negative, and the ping timeout positive. `providerFileDescriptor`
 takes the provider's packet flow as a plain `NSObject` (no NetworkExtension
 import needed) and walks its `socket.fileDescriptor` key path with a
 capability check at each hop, so an iOS release that renames the key throws
-`.invalidInput` instead of tripping an Objective-C exception — re-verify it
+`.invalidInput` instead of tripping an Objective-C exception. Re-verify it
 per iOS release. `ensureAssets` only downloads databases that are missing or
 unreadable, never refetches what is there. Enum cases
 (`.block`, `.plain(...)`, `.proxy`, …) and engine-made values
-(`XrayAgeKeyPair`, snapshots, deltas) need no factories — cases already are
+(`XrayAgeKeyPair`, snapshots, deltas) need no factories. Cases already are
 value-passing calls, and read-models come from the engine.
 
-`Security` framework and libresolv are linked by the package, so the Go
+The package links the `Security` framework and libresolv, so the Go
 runtime inside libXray resolves its TLS and XrayDNS symbols without you adding
 anything to the target.
 
@@ -762,13 +763,13 @@ let results = try Xray.shared.ping(targets, options: options)
 // XrayPingResult: succeeded, latencyMilliseconds, failureReason?
 ```
 
-Each measurement completes a full HTTP request through the outbound, so
-success covers routing and TLS handshakes, not just a bare TCP probe.
+Each measurement completes a full HTTP request through the outbound. Success
+proves routing and TLS handshakes work, where a bare TCP probe only proves reachability.
 Targets pair a server's compact Xray JSON (only its `outbounds` are read)
-with an optional outbound tag — nil lets the engine pick the outbound tagged
+with an optional outbound tag. Nil lets the engine pick the outbound tagged
 `"proxy"`, else the first one. Answers come back in input order, each
-carrying `succeeded`, `latencyMilliseconds` (real measurement, in ms), and —
-on failure — `failureReason`. If one entry of the engine's answer doesn't
+carrying `succeeded`, `latencyMilliseconds` (real measurement, in ms), and,
+on failure, `failureReason`. If one entry of the engine's answer doesn't
 parse, that slot gets a synthesized failure result instead of failing the
 whole batch, so `results[i]` still answers `targets[i]`.
 
@@ -776,14 +777,14 @@ Four rules throw `.invalidInput` before touching the engine: no targets, more
 than five targets per call (split larger pools into batches), a timeout of
 zero or less (seconds, whole-batch deadline), and a test URL that is not an
 absolute HTTP(S) URL. A fifth: the engine must be stopped, because it
-measures in an isolated instance of its own — measuring while running throws
+measures in an isolated instance of its own. Measuring while running throws
 before the call instead of the engine's refusal. Blocking, so prefer a
 background task or wrap it in `Task.detached` yourself.
 
 The test URL is what the engine actually fetches through each outbound, so
-point it at an endpoint that answers fast and empty — a `204 No Content` is
-ideal, and your own endpoint measures your real path rather than the
-internet's. If your endpoint goes down, every target reports failure with
+point it at an endpoint that answers fast and empty, a `204 No Content` is
+ideal, and your own endpoint measures your real path instead of a public one.
+If your endpoint goes down, every target reports failure with
 your outage as the reason, so check the endpoint directly before blaming the
 servers.
 
@@ -805,34 +806,34 @@ while running {
 ```
 
 The engine already publishes per-tag byte counters on a localhost HTTP
-endpoint (`/debug/vars`) — no new dependencies, no OS-version gating, stock
-binary. Setting `metricsPort` writes the three config pieces that enable it:
+endpoint (`/debug/vars`), and the binary is stock, so this needs no new dependencies
+and no OS-version gating. Setting `metricsPort` writes the three config pieces that enable it:
 the `metrics` listener on `127.0.0.1:port`, an empty `stats` section, and the
 four `policy.system` stats switches (merged into your existing policy, never
 replacing it). Out-of-range ports throw `.invalidInput` at assembly, before
-anything launches — and so does a metrics port an inbound already listens on:
-give metrics its own pocket (from `verifyAvailablePorts`), not a shared one.
-Treat the port like a local proxy listener: it binds
-loopback only, but any process on the device can reach loopback — and the
-endpoint also serves the engine's `pprof` block — so keep it unadvertised
+anything launches. A metrics port an inbound already listens on throws too.
+Give metrics its own port (from `verifyAvailablePorts`), not a shared one.
+Treat the port like a local proxy listener. It binds
+loopback only, but any process on the device can reach loopback, and the
+endpoint also serves the engine's `pprof` block, so keep it unadvertised
 and verify it the way you'd guard SOCKS.
 
 `snapshot()` returns a `XrayTrafficSnapshot`: per-tag `inbound`/`outbound`
 dictionaries of `XrayTrafficCounter` (`up`, `down`, `total`), plus summed
 `totalUp`/`totalDown`. A single corrupt counter (past `Int64.max`,
 mid-rotation garbage) clamps to zero instead of failing the whole
-snapshot — every other tag still reports. The engine counts every byte
-twice — once on the
-inbound it entered through, once on the outbound it left through — so the
+snapshot. Every other tag still reports. The engine counts every byte
+twice, once on the
+inbound it entered through, once on the outbound it left through, so the
 totals are 2x the bytes on the wire. Dashboards want the outbound side:
 `uplink`/`downlink` (and their `XrayTrafficDelta` twins, with
-`uplinkPerSecond`/`downlinkPerSecond`) count that side only — and
+`uplinkPerSecond`/`downlinkPerSecond`) count that side only, and
 `session.usage` (`XrayDataUsage`) accumulates exactly those across
 polls, so one `advance` per snapshot is the whole data-usage feature:
 the first snapshot sets the baseline, restarts read as fresh traffic,
 and the counters reset on every start so each session owns its
 numbers. `delta(since:)`
-diffs two snapshots into a `XrayTrafficDelta` — per-tag bytes moved in the
+diffs two snapshots into a `XrayTrafficDelta`, per-tag bytes moved in the
 interval, totals, and `upPerSecond`/`downPerSecond` derived from the
 wall-clock gap, so polling once a second reads as live speed. If the engine
 restarted between snapshots, the whole later reading counts as new traffic
@@ -840,11 +841,11 @@ rather than going negative. `trafficMonitor` takes `host` (default
 `127.0.0.1`; a bare IPv6 literal is bracketed for you, a `host:port` shape
 is rejected so the port can't hide in two places) and `timeoutSeconds`
 (default 5). Unreachable endpoints and non-200 answers throw
-`.bridgeFailed` — except a cancelled poll loop, which rethrows
+`.bridgeFailed`. A cancelled poll loop rethrows
 `CancellationError` so `Task` cancellation keeps working; poll failures
 in your loop should keep the last good values
 and retry, the same way you'd treat any sampled signal. (`/debug/vars` also
-exposes the engine's own `pprof` block — same endpoint, not parsed here.)
+exposes the engine's own `pprof` block, same endpoint, not parsed here.)
 
 #### `XrayObservatory`: which outbounds are actually alive
 
@@ -874,7 +875,7 @@ if health?.alive == true, let ms = health?.delayMilliseconds {
 `XrayOutboundProbe` fields: `alive`, `delayMilliseconds` (nil when no successful
 probe is on record), `failureReason` (the engine's own text for the last
 failure), `lastSeen`, `lastTry`. Probing costs a real network request per
-selected outbound per interval — pick `subjectSelector` deliberately and
+selected outbound per interval. Pick `subjectSelector` deliberately and
 keep the interval honest. Without an `observatory` section the field reads
 empty; without `metricsPort` there is no place to read the answers. The
 factory validates up front: an empty selector, a non-http(s) probe URL, or
@@ -884,7 +885,7 @@ throws `.invalidInput` before anything is written.
 #### `XrayTrafficWatchdog`: fire once per stall, then reset
 
 The monitor answers "how much"; the watchdog answers "has anything moved
-lately" — the primitive behind every reconnect loop:
+lately". It is the check every reconnect loop builds on:
 
 ```swift
 let watchdog = try Xray.shared.trafficWatchdog(
@@ -897,12 +898,12 @@ watchdog.stop()
 
 `interval` is the poll cadence, `stalledAfter` the silence that counts as a
 stall, and `timeoutSeconds` the per-poll HTTP budget (default 5s; reject an
-interval under 10ms or a window shorter than the interval — a runaway-tight
-cadence is a bug, not a policy). The fire is latched — one call per episode, reset by any movement —
-and failed snapshots count as stalls, so a dead metrics endpoint fires too
-instead of reading as eternal calm. An idle tunnel reads as stalled, so
+interval under 10ms or a window shorter than the interval, a runaway-tight
+cadence is a bug, not a policy). The fire is latched. One call per episode,
+reset by any movement, and failed snapshots count as stalls, so a dead
+metrics endpoint fires too instead of reading as eternal calm. An idle tunnel reads as stalled, so
 start the watchdog after first traffic or set the window generously.
-`stop()` disarms it; dropping it without stopping is safe (it stands down),
+`stop()` disarms it; dropping it without stopping is safe (it stops on its own),
 but explicit stops read better in provider teardown. See [Staying
 connected](#staying-connected-the-rebuild-recipe) for the full loop this
 plugs into.
@@ -913,11 +914,11 @@ Two jobs live here: fail fast when a required database is absent, and fetch
 the ones that are.
 
 **The gate.** The engine resolves `geosite:` / `geoip:` entries lazily at
-traffic time, so a missing file turns into silent dead routing — `validate()`
+traffic time, so a missing file turns into silent dead routing. `validate()`
 passes, real requests just fail. Every `session.build` / `validate` / `start`
 therefore checks that the databases the routing *and* dns sections reference
 exist and parse where the engine will look: the document's
-`env` first (dotted `xray.location.asset`, then `XRAY_LOCATION_ASSET` — set
+`env` first (dotted `xray.location.asset`, then `XRAY_LOCATION_ASSET`, set
 either via `XraySessionOptions.environment`), then the process environment
 under the same spellings, then the engine's fixed fallbacks
 (`/usr/local/share/xray`, `/usr/share/xray`, `/opt/share/xray`), and the
@@ -929,7 +930,7 @@ searched. Plain domains and CIDRs never trigger the check, and
 `XraySessionOptions.geoCheck: false` turns it off entirely for documents you verify
 yourself. `ext:` references are checked the same way by filename: a bare
 `ext:custom.dat:tag` is searched in the candidate directories, an absolute
-path is checked where it points — a missing file throws `.geoAssets` too.
+path is checked where it points. A missing file throws `.geoAssets` too.
 
 **The fetch.** The engine only inventories databases it already has.
 Fetching them is a separate step, and this package covers it too:
@@ -958,7 +959,7 @@ verifies each referenced `.dat` by its protobuf framing, and throws
 **The upkeep.** First launches download; every launch after only fills gaps.
 `ensureAssets` scans the assembled config (or an explicit list) for
 `geosite:` / `geoip:` references and downloads only the databases that are
-missing or unreadable — files already present are never refetched, and a
+missing or unreadable. Files already present are never refetched, and a
 document with plain-domain rules downloads nothing at all:
 
 ```swift
@@ -968,12 +969,12 @@ try session.start(.json(config.json), options: options)
 ```
 
 Omit `for:` to fetch the pair regardless of references, or pass
-`databases:` to pin the list. The returned directory feeds straight into
-`XraySessionOptions.environment`, closing the loop with the gate above.
+`databases:` to pin the list. The returned directory goes straight into
+`XraySessionOptions.environment`, which is what the gate checks.
 
 ### Subscriptions: fetch, unwrap, parse
 
-A subscription is a URL that serves a server list as text — one
+A subscription is a URL that serves a server list as text, one
 `vless://` / `trojan://` / `ss://` / `socks://` link per line, a single
 link, a base64 blob of those, or (for panels that encrypt) an Age-armored
 blob. Three stages, three calls, no magic:
@@ -993,13 +994,13 @@ let config = try Xray.shared.configuration(.shareLinks(plain))
 What the converter keeps is engine behavior, verified against the bundled
 build: `vless://`, `trojan://`, `ss://`, `socks://`, newline-separated
 feeds, and base64 blobs of those. `vmess://`, `hysteria2://`,
-`wireguard://`, and raw `{"outbounds":[...]}` JSON blobs are dropped — a
+`wireguard://`, and raw `{"outbounds":[...]}` JSON blobs are dropped. A
 feed of only dropped kinds throws "no valid outbound found". Age armor is
 the only encryption the unwrap understands; anything else must be decoded
 before it arrives here.
 
-The one-call variant fetches fresh every time — nothing cached, nothing
-auto-refreshed — then unwraps, tops up geo assets, and launches under a
+The one-call variant fetches fresh every time. Nothing is cached, nothing
+auto-refreshes. It then unwraps, tops up geo assets, and launches under a
 deadline, capped at the engine's 16 MiB feed limit:
 
 ```swift
@@ -1015,8 +1016,8 @@ try await session.start(
 
 The 16 MiB cap and the 30-second defaults are the whole policy: feeds are
 small text, and anything bigger or slower is treated as wrong rather than
-waited out. Poll the URL on your own schedule; the package never phones
-home between launches.
+waited out. Poll the URL on your own schedule; the package makes no network
+calls between launches.
 
 ### `XrayError`: five cases
 
@@ -1027,29 +1028,29 @@ XrayError.invalidInput(String)  // rejected before the call: bad ports, >5 ping
                                  // targets, empty outbounds with .proxy routing,
                                  // oversized (>16 MiB) raw requests, ...
 XrayError.geoAssets(String)     // a geosite:/geoip: reference has no readable
-                                 // database — see Geo databases for the fix
+                                 // database. See Geo databases for the fix
 XrayError.timedOut(String)      // the engine never answered inside the bound:
                                  // deadline starts, feed fetches, health checks
 ```
 
 `.engineFailed` strings come from the engine ("no valid outbound found" and
-friends) and can change wording between engine releases — match on them only
+friends) and can change wording between engine releases. Match on them only
 as a last resort. `.invalidInput` and `.geoAssets` are the package's own
-voice: deterministic, documented above, and safe to switch on. Every case also
-carries `recoveryHint`, a one-line pointer at where to look next.
+errors: deterministic, documented above, and safe to switch on. Every case also
+sets `recoveryHint`, a one-line note on where to look next.
 
 ### The typed tree: `XrayJSONValue`
 
-Everything `transform` and `patch` touch is this enum — null, bool, int,
-double, string, array, object — `Codable`, `Sendable`, `Hashable`, with
-literal and dynamic-member support, so documents build and read without a
+Everything `transform` and `patch` touch is this enum. It holds null, bool, int,
+double, string, array, and object, and it is `Codable`, `Sendable`, and `Hashable`,
+with literal and dynamic-member support, so documents build and read without a
 single cast:
 
 ```swift
 var doc: XrayJSONValue = ["log": ["loglevel": "warning"]]  // dictionary literal
 doc["log"]?["loglevel"] = "error"        // write through subscripts
 doc.log?.loglevel?.stringValue           // "error", via dynamic members
-doc["missing"]                           // nil — reading is nil-safe, never traps
+doc["missing"]                           // nil. Reading is nil-safe, never traps
 doc.inbounds?[0]?["tag"]?.stringValue    // index, then field, then typed read
 ```
 
@@ -1077,10 +1078,10 @@ print(response)
 
 `sendRawRequest` throws `XrayError` on engine-reported failure and frees the
 engine's malloc'd answer internally. Requests over 16 MiB are rejected as
-`.invalidInput` before crossing the bridge — the engine's own ceiling, so a
+`.invalidInput` before crossing the bridge, the engine's own ceiling, so a
 well-formed giant request still fails exactly as it would remotely, without
 paying for the round trip. Anything you pass with an `apiVersion`
-the engine does not know earns "unsupported apiVersion", which is also your
+the engine does not know fails with "unsupported apiVersion". That failure is also your
 signal that the embedded engine advanced and this wrapper's public methods
 are the ones to prefer. The bare `CGoInvoke` / `CGoFree` C functions stay
 reachable for emergencies; if you call `CGoInvoke` yourself, capture the
@@ -1088,8 +1089,8 @@ pointer and release it with `CGoFree`.
 
 ## Choosing a server: ping, then connect
 
-One-shot `ping` needs the engine stopped — it measures through an isolated
-instance of its own — so the app's natural order is: fetch servers, ping
+One-shot `ping` needs the engine stopped. It measures through an isolated
+instance of its own, so the app's natural order is: fetch servers, ping
 them idle, connect the winner, and use the observatory from then on. Split
 the feed into one link per row, convert each to its JSON, measure, sort:
 
@@ -1103,13 +1104,13 @@ let targets = try links.map {
 }
 let results = try Xray.shared.ping(targets,
     options: try Xray.shared.pingOptions(timeoutSeconds: 10))
-// results[i].succeeded, .latencyMilliseconds, .failureReason? — input order
+// results[i].succeeded, .latencyMilliseconds, .failureReason? In input order
 ```
 
 Rules that throw before the engine is touched: no targets, more than five
 per call (batch larger pools), non-positive timeout, non-HTTP(S) test URL,
 engine running. Failed measurements normalize to 0 ms with a
-`failureReason` — the engine's `10000`/`11000` sentinels never leak. Once
+`failureReason`. The engine's `10000`/`11000` sentinels never leak. Once
 connected, stop pinging and read `snapshot().observatory` instead: it
 covers only outbounds in the running config, which is exactly the set a
 connected app cares about.
@@ -1154,7 +1155,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         a.metricsPort = 24242
         let config = try a.assemble()
 
-        // 4. Provider gate, then launch under a deadline — never sync here.
+        // 4. Provider gate, then launch under a deadline. Never sync here.
         let opts = Xray.shared.options(
             tun: a.tun, metricsPort: 24242,
             environment: ["xray.location.asset": geoDir.path]
@@ -1163,7 +1164,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         guard issues.isEmpty else { throw ProviderError.misconfigured(issues) }
         try await session.start(config, options: opts, deadline: 20)
 
-        // 5. Counters after launch; never a read-packets loop — the engine
+        // 5. Counters after launch; never a read-packets loop. The engine
         //    owns the fd and reads it itself.
         monitor = try Xray.shared.trafficMonitor(port: 24242)
     }
@@ -1175,17 +1176,17 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 }
 ```
 
-`preflightIssues` before every launch catches the two provider killers —
-a missing descriptor and a non-loopback listen — as values, not crashes.
+`preflightIssues` before every launch catches the two provider killers,
+a missing descriptor and a non-loopback listen, as values, not crashes.
 `deadline:` bounds the start inside the provider's time budget; the sync
 starts have no bound and do not belong here. Install the VPN configuration
 once (Settings → VPN); the icon and the lifecycle come with it.
 
 ## Testing your app: mock the session
 
-`XraySessionProviding` is the session's protocol surface — type your app's
+`XraySessionProviding` is the session's protocol. Type your app's
 dependency as the protocol, inject `newSession()` in production and a stub
-in tests. No engine, no ports, no packets:
+in tests. The stub starts no engine and touches no network:
 
 ```swift
 final class FakeSession: XraySessionProviding {
@@ -1212,7 +1213,7 @@ final class FakeSession: XraySessionProviding {
 
 Your app types its dependency as `XraySessionProviding`, constructs with
 `Xray.shared.newSession()` in production and `FakeSession()` in tests, and
-asserts on `started` — which documents were launched, in which order —
+asserts on `started`, which documents were launched and in which order,
 without ever touching the engine. When the test is about the document
 itself rather than the lifecycle, skip the fake: `build`,
 `validateOffline`, and `preflightIssues` all run launch-free against the
@@ -1221,23 +1222,23 @@ mock at all.
 
 ## Troubleshooting
 
-- **"unsupported apiVersion"** — XTLS/libXray bumped its bridge protocol. The
+- **"unsupported apiVersion".** XTLS/libXray bumped its bridge protocol. The
   constant to update is `protocolVersion` inside
   `Sources/CoreXray/Calls/EngineTransport.swift`,
   taken from the `LibXrayAPIVersion` in upstream `invoke_model.go` (and please
   open an issue so the next core-update PR also carries the fix).
-- **"no valid outbound found"** — the engine declined every entry you passed.
+- **"no valid outbound found".** The engine declined every entry you passed.
   The bundled converter keeps `vless://`, `trojan://`, `ss://`, and
   `socks://` (plus base64 of those) and drops `vmess://`, `hysteria2://`,
-  `wireguard://`, and `{"outbounds":[...]}` JSON — a feed of only dropped
+  `wireguard://`, and `{"outbounds":[...]}` JSON. A feed of only dropped
   kinds throws this. A bare `vless://uuid@host:443` without scheme defaults
   will not build either. Validate with `validate()` for detail on a JSON
   config.
-- **linker failures mentioning `Sec*` or `res_9_*` symbols** — your app built
+- **Linker failures mentioning `Sec*` or `res_9_*` symbols.** Your app built
   against the binary target directly instead of going through `CoreXray`.
   Depend on the `CoreXray` product, which owns the framework and library
   linkage.
-- **Package resolution hangs or fails on "unsupported platform"** — the
+- **Package resolution hangs or fails on "unsupported platform".** The
   framework has no watchOS/visionOS slices, so those destinations cannot use
   this package, now or later.
 
@@ -1245,12 +1246,12 @@ mock at all.
 
 The engine is process-global and silent when it dies: network changes,
 sleep/wake, or a crash leave the tunnel up with nothing moving. The package
-gives you the three primitives; the app owns the loop:
+provides the three tools; the app owns the loop:
 
-1. **Liveness** — poll `session` counters, not just `health()`. `health()`
+1. **Liveness.** Poll `session` counters. `health()`
    proves the bridge answers; advancing `uplink/downlink` proves traffic
    moves. `XrayTrafficWatchdog` does the polling and calls `onStall` after
-   `stalledAfter` with no movement (latched — one fire per episode, reset by
+   `stalledAfter` with no movement (latched. One fire per episode, reset by
    any traffic). An idle tunnel reads as stalled, so start it after first
    traffic or set the window generously:
 
@@ -1261,23 +1262,23 @@ gives you the three primitives; the app owns the loop:
    watchdog.start()
    ```
 
-2. **Path changes** — watch `NWPathMonitor` in the app (it stays app policy,
+2. **Path changes.** Watch `NWPathMonitor` in the app (it stays app policy,
    the package never owns it). On an unsatisfied path, debounce ~2s (tunnels
    flap during handover), then rebuild.
-3. **Rebuild** — `stop()` is safe when idle, so rebuild unconditionally:
+3. **Rebuild.** `stop()` is safe when idle, so rebuild unconditionally:
    `try? session.stop()`, then `start(remoteSubscription:deadline:)` (or the
-   assemble path) with backoff 1s → 2s → 4s capped, then surface the failure
+   assemble path) with backoff 1s → 2s → 4s capped, then report the failure
    to the user instead of retrying forever. Prefer the async deadline start
    everywhere in providers: a thrown error is recoverable, a watchdog kill
    of an overstaying sync start is not.
-4. **Forensics** — when a rebuild fires, attach `session.recentLogs()` and
+4. **Forensics.** When a rebuild fires, attach `session.recentLogs()` and
    `session.recentEngineLogs()` to the report. The first says what the
    package did; the second says what the engine saw.
 
 ## Credits
 
 All engine work belongs to the [XTLS team](https://github.com/XTLS/libXray)
-and [Xray-core](https://github.com/XTLS/Xray-core). This repo only carries
+and [Xray-core](https://github.com/XTLS/Xray-core). This repo only references
 their Apple builds in SwiftPM-friendly form. The license is upstream's; see
 `LICENSE`.
 
@@ -1286,27 +1287,27 @@ their Apple builds in SwiftPM-friendly form. The license is upstream's; see
 The full walkthroughs live in [`Examples/`](Examples/), one file per
 task, each with commented code:
 
-1. [`01-full-json.md`](Examples/01-full-json.md) — running the core from
+1. [`01-full-json.md`](Examples/01-full-json.md). Running the core from
    a full JSON document: load, validate, launch, stop.
-2. [`02-assembler-proxy-and-tun.md`](Examples/02-assembler-proxy-and-tun.md) —
-   assembling documents in proxy mode (local entries, routing, DNS,
+2. [`02-assembler-proxy-and-tun.md`](Examples/02-assembler-proxy-and-tun.md).
+   Assembling documents in proxy mode (local entries, routing, DNS,
    logging) and TUN mode (fd hand-off, preflight, no dead listeners).
-3. [`03-traffic-stats.md`](Examples/03-traffic-stats.md) — reading stats:
+3. [`03-traffic-stats.md`](Examples/03-traffic-stats.md). Reading stats:
    `uplink`/`downlink` vs doubled totals, per-second speeds from deltas,
    observatory probes, the stall watchdog.
-4. [`04-health-and-status.md`](Examples/04-health-and-status.md) —
-   checking core status: `isRunning`, `version`, `health`,
+4. [`04-health-and-status.md`](Examples/04-health-and-status.md).
+   Checking core status: `isRunning`, `version`, `health`,
    `connectedSince`, forensics, provider preflight.
-5. [`05-logging.md`](Examples/05-logging.md) — writing the log (live sink
+5. [`05-logging.md`](Examples/05-logging.md). Writing the log (live sink
    + engine log files) and reading it back (ring buffer, tails, the
    disconnect report).
-6. [`06-ping.md`](Examples/06-ping.md) — pinging one config or all
+6. [`06-ping.md`](Examples/06-ping.md). Pinging one config or all
    configs: conversion first, batching, timeout/test-URL rules, and why
    the observatory replaces ping while connected.
-7. [`07-network-extension.md`](Examples/07-network-extension.md) —
-   setting up the Network Extension: target, entitlements, app group,
+7. [`07-network-extension.md`](Examples/07-network-extension.md).
+   Setting up the Network Extension: target, entitlements, app group,
    the full provider start path, the app-side manager.
-8. [`08-subscriptions.md`](Examples/08-subscriptions.md) — from
+8. [`08-subscriptions.md`](Examples/08-subscriptions.md). From
    subscription URL to running engine: fetch, Age-unwrap, parse, launch.
-9. [`09-stay-connected.md`](Examples/09-stay-connected.md) — watchdog →
+9. [`09-stay-connected.md`](Examples/09-stay-connected.md). Watchdog →
    health → rebuild → preflight: the reconnect loop.

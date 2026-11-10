@@ -8,7 +8,7 @@ import Foundation
 /// time: `proxy` becomes the converted outbound's tag, the rest become
 /// standard outbounds (`direct`, `block`, `dns-out`) that are added to
 /// the document automatically when referenced but missing. `custom`
-/// passes a tag through verbatim — it must already exist.
+/// passes a tag through verbatim. It must already exist.
 public enum XrayDestination: Sendable {
     /// The converted proxy server (first outbound).
     case proxy
@@ -69,7 +69,7 @@ public struct XrayRoutingRule: Sendable {
     public var destination: XrayDestination?
 
     /// A rule with no match conditions: the engine rejects it ("no
-    /// effective fields" — verified live), with or without a
+    /// effective fields", verified live, with or without a
     /// destination. The trailing `final` catch-all carries `network:
     /// "tcp,udp"`, so it never trips this.
     var isIneffective: Bool {
@@ -79,7 +79,7 @@ public struct XrayRoutingRule: Sendable {
 
     /// A rule that matches every routed connection: no narrowing
     /// conditions beyond (at most) `network`. Only `final` should look
-    /// like this — an earlier one starves every rule below it.
+    /// like this. An earlier one starves every rule below it.
     var isMatchAll: Bool {
         domains.isEmpty && ips.isEmpty && protocols.isEmpty && inboundTags.isEmpty
             && (port == nil || port?.isEmpty == true)
@@ -163,7 +163,7 @@ public struct XrayRouting: Sendable {
     public var rules: [XrayRoutingRule]
     /// Where traffic no rule matched goes. The engine has no `final`
     /// field, so this is written as a trailing `network: "tcp,udp"`
-    /// rule — every connection the engine routes is TCP or UDP, so it
+    /// rule. Every connection the engine routes is TCP or UDP, so it
     /// catches the leftovers exactly where `final` promises. (A truly
     /// condition-less rule is rejected by the engine as having no
     /// effective fields, hence the network condition.)
@@ -193,9 +193,9 @@ public struct XrayRouting: Sendable {
         if let final {
             // No `final` on the wire: a trailing `network: "tcp,udp"`
             // field rule catches the leftovers exactly where `final`
-            // promises. The network condition is load-bearing — the
+            // promises. The network condition is load-bearing. The
             // engine rejects a condition-less rule ("no effective
-            // fields") — and it matches everything the engine routes.
+            // fields"). It matches everything the engine routes.
             rules.append(XrayRoutingRule(network: "tcp,udp", destination: final))
         }
         var section: XrayJSONObject = ["rules": .array(rules.map { .object($0.wireObject(proxyTag: proxyTag)) })]

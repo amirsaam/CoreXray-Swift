@@ -22,13 +22,13 @@ public enum XrayGeoDatabase: String, Sendable {
 /// as read-only: concurrent downloads are safe, concurrent
 /// reconfiguration is not.
 ///
-/// URLs may be `https` (production) or `file` (tests and offline packs) —
+/// URLs may be `https` (production) or `file` (tests and offline packs),
 /// anything `URLSession` downloads. Redirects are followed by the
 /// transport (the default Loyalsoldier "latest/download" links are
 /// redirects); authentication is not: a source behind auth needs a URL
 /// whose response is already authorized (signed link), because no
 /// headers or delegates are attached. Downloads trust the transport's
-/// TLS — a compromised source ships a compromised database, and the
+/// TLS. A compromised source ships a compromised database, and the
 /// gate only checks shape, not signature, so pin sources you trust.
 public final class XrayGeoDownloader: @unchecked Sendable {
     /// Default source for the IP database.
@@ -65,7 +65,7 @@ public final class XrayGeoDownloader: @unchecked Sendable {
 
     /// Transport for downloads. `URLSession.shared` in production;
     /// tests swap in a stubbed configuration. Set once before the first
-    /// download — access is lock-guarded, but swapping it mid-download
+    /// download. Access is lock-guarded, but swapping it mid-download
     /// races the in-flight request, so treat it as set-once
     /// configuration.
     internal var urlSession: URLSession {
@@ -88,7 +88,7 @@ public final class XrayGeoDownloader: @unchecked Sendable {
     }
 
     /// Downloads both databases into `directory`, creating it as needed
-    /// and replacing same-named files — atomically: each file downloads
+    /// and replacing same-named files, atomically. Each file downloads
     /// to a uniquely-named staging sibling and moves into place only
     /// after the bytes land, so a kill between downloads never destroys
     /// the file that was already good. Progress runs 0.0 to 1.0 across
@@ -127,7 +127,7 @@ public final class XrayGeoDownloader: @unchecked Sendable {
     /// unreadable in `directory`, creating it as needed. Unlike
     /// `download(into:)`, files already present are left alone.
     /// Progress across the fetched files runs 0.0 to 1.0 when
-    /// `onProgress` is set — this is the upkeep path `ensureAssets`
+    /// `onProgress` is set. This is the upkeep path `ensureAssets`
     /// uses, not the first-fetch path.
     func fetchMissing(
         _ databases: [XrayGeoDatabase],
@@ -217,7 +217,7 @@ public final class XrayGeoDownloader: @unchecked Sendable {
                         do {
                             try FileManager.default.moveItem(at: tempURL, to: staging)
                             // The old file is removed only after the new one is
-                            // staged — and under the lock, so a concurrent
+                            // staged, and under the lock, so a concurrent
                             // fetch of the same file never interleaves a
                             // remove between another's stage and move.
                             try Self.replaceLock.withLock {
@@ -264,7 +264,7 @@ public final class XrayGeoDownloader: @unchecked Sendable {
     /// Translates transport and filesystem failures into the package's
     /// error type: timeouts surface as `.timedOut`, everything else as
     /// `.bridgeFailed` naming the URL. `XrayError` and cooperative
-    /// cancellation pass through untouched — a caller cancel is never a
+    /// cancellation pass through untouched. A caller cancel is never a
     /// download failure.
     private static func downloadError(_ error: Error, url: URL) -> Error {
         if error is CancellationError { return error }
@@ -287,7 +287,7 @@ public final class XrayGeoDownloader: @unchecked Sendable {
 
 /// Fail-fast check for the geo databases a configuration depends on.
 /// The engine resolves `geosite:` / `geoip:` entries lazily at traffic
-/// time, so a missing file turns into broken routing at runtime —
+/// time, so a missing file turns into broken routing at runtime.
 /// `validate()` passes and the user's requests silently dead-end. The
 /// gate runs during `XraySession.build` / `validate` / `start` (turn it off
 /// with `XraySessionOptions.geoCheck`) and refuses to launch when a rule references
@@ -307,7 +307,7 @@ public enum XrayGeoAssets: Sendable {
     /// location is set anywhere, so it is appended only when nothing
     /// else named a directory. `/usr/local/etc/xray` is deliberately
     /// absent: the engine never looks there. Returns nothing when none
-    /// of the sources apply — lookup locations are reported in the
+    /// of the sources apply. Lookup locations are reported in the
     /// thrown error instead.
     static func candidateDirectories(env: XrayJSONObject?) -> [String] {
         var directories: [String] = []
@@ -347,7 +347,7 @@ public enum XrayGeoAssets: Sendable {
 
     /// External data files named by `ext:` references
     /// (`"ext:custom.dat:tag"` → `"custom.dat"`), sorted. These are not
-    /// `XrayGeoDatabase` cases — the engine loads them by filename — so
+    /// `XrayGeoDatabase` cases. The engine loads them by filename, so
     /// they travel separately into `check(externalFiles:env:)`.
     static func referencedExternalFiles(in config: XrayJSONObject) -> [String] {
         collected(in: config).files.sorted()
@@ -378,7 +378,7 @@ public enum XrayGeoAssets: Sendable {
     /// empty filename (`"ext::tag"`) is kept as `""` rather than dropped,
     /// so the gate rejects it with a naming-the-typo error instead of
     /// passing a document the engine will fail on. Filenames with
-    /// several colons split at the last one — the engine's prefix/file
+    /// several colons split at the last one. The engine's prefix/file
     /// split assumes the same shape, so avoid colons in `ext:` filenames.
     static func externalFile(named text: String) -> String? {
         guard text.hasPrefix("ext:") else { return nil }
@@ -419,7 +419,7 @@ public enum XrayGeoAssets: Sendable {
     /// engine. Both databases start with the same protobuf framing byte
     /// (field 1, wiretype 2), which catches the realistic corruptions:
     /// zero-byte leftovers and HTML error pages saved as `.dat`. It
-    /// cannot catch a swapped pair — both files share the framing byte,
+    /// cannot catch a swapped pair. Both files share the framing byte,
     /// so keep filenames straight. Throws `XrayError.geoAssets` naming
     /// the database and every directory that was searched.
     static func check(referenced databases: [XrayGeoDatabase], env: XrayJSONObject?) throws {
@@ -491,8 +491,8 @@ public enum XrayGeoAssets: Sendable {
     /// Catching the length matters: a newline-prefixed text file
     /// (`0x0A` plus ASCII) passes a first-byte check and then fails at
     /// traffic time, and a truncated download passes it too. Both files
-    /// share the framing, so this still cannot catch a swapped pair —
-    /// keep filenames straight.
+    /// share the framing, so this still cannot catch a swapped pair.
+    /// Keep filenames straight.
     static func verify(at path: String) -> Bool {
         guard let file = FileHandle(forReadingAtPath: path) else { return false }
         defer { try? file.close() }
@@ -515,7 +515,7 @@ public enum XrayGeoAssets: Sendable {
                 let rest = header.count - (index - header.startIndex)
                 if rest >= length { return true }
                 // Header too short to hold the first field: fall back to
-                // the file size — a real database dwarfs its first field.
+                // the file size. A real database dwarfs its first field.
                 guard let size = try? file.seekToEnd(), size >= UInt64(1 + lengthBytes + length) else { return false }
                 return true
             }
@@ -528,7 +528,7 @@ extension Xray {
 
     /// Writes a human-readable inventory of a GeoIP or GeoSite database file.
     /// The summary lands next to the database at `<directory>/<database>.json`
-    /// (the engine's own doing — it appends `.json`, not `.txt`), listing
+    /// (the engine appends `.json`, not `.txt`), listing
     /// every code/region with its rule and category counts. Returns that
     /// file's URL.
     ///
@@ -593,7 +593,7 @@ private final class ProgressTracker: @unchecked Sendable {
         if let ip { self.ip = ip }
         if let site { self.site = site }
         let total = (self.ip + self.site) / 2
-        // KVO fraction updates fire per packet — reporting every one
+        // KVO fraction updates fire per packet. Reporting every one
         // would hop to the main actor hundreds of times per second for
         // a number the UI rounds to a percent. Report on 1% movement
         // and always on completion.
@@ -654,7 +654,7 @@ extension Xray {
     }
 
     /// Test seam for `ensureAssets`: same scan, but the fetch runs through
-    /// your downloader — point its `urlSession` at a stubbed configuration
+    /// your downloader. Point its `urlSession` at a stubbed configuration
     /// and no packet leaves the machine.
     internal func ensureAssets(
         for config: XrayConfig? = nil,

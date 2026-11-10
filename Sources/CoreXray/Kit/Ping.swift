@@ -5,8 +5,8 @@ import Foundation
 // All validation happens here, before anything crosses the bridge.
 
 /// One server to measure: its own compact Xray JSON plus the tag of the
-/// outbound inside it that should be requested through. The JSON only
-/// needs its `outbounds` — nothing else is read. A nil tag lets the
+/// outbound inside it that the request uses. The JSON needs only its
+/// `outbounds`. Nothing else is read. A nil tag lets the
 /// engine choose: the outbound tagged `"proxy"`, else the first one.
 ///
 /// ```swift
@@ -39,7 +39,7 @@ public struct XrayPingResult: Decodable, Sendable {
     /// Milliseconds from request start to completion. Zero when the
     /// request failed: the engine reports its own sentinels (10000 for
     /// timeouts, 11000 for routing failures) in `delay`, which are
-    /// engine internals, not measurements — so they are normalized
+    /// engine internals, not measurements. They are normalized
     /// away here and the reason stays in `failureReason`.
     public let latencyMilliseconds: Int
 
@@ -47,7 +47,7 @@ public struct XrayPingResult: Decodable, Sendable {
     public let failureReason: String?
 
     /// Synthesized locally when the engine's answer for one target of
-    /// a batch doesn't parse — the slot still answers its target.
+    /// a batch does not parse. The slot still answers its target.
     internal init(succeeded: Bool, latencyMilliseconds: Int, failureReason: String?) {
         self.succeeded = succeeded
         self.latencyMilliseconds = latencyMilliseconds
@@ -92,14 +92,14 @@ public struct XrayPingOptions: Sendable {
 extension Xray {
     /// Measures connect latency, opening one engine connection per target.
     /// Same idea as the native Xray apps: each measurement completes a full
-    /// HTTP request through the outbound, so success covers routing and TLS
-    /// handshakes, not just a bare TCP probe. Blocks until every request
+    /// HTTP request through the outbound. Success confirms routing and TLS
+    /// handshakes complete. Blocks until every request
     /// finishes or the deadline passes.
     ///
     /// The engine measures in an isolated instance of its own, so it must be
-    /// stopped first — measuring while running throws `.invalidInput`
+    /// stopped first. Measuring while running throws `.invalidInput`
     /// instead of the engine's refusal. The stopped check happens at call
-    /// time: a start racing the call still fails at the engine, loudly.
+    /// time: a start racing the call still fails at the engine.
     /// At most five targets per call.
     public func ping(_ targets: [XrayPingTarget], options: XrayPingOptions? = nil) throws -> [XrayPingResult] {
         guard !targets.isEmpty else {
@@ -110,7 +110,7 @@ extension Xray {
             throw XrayError.invalidInput("ping measures at most 5 targets at once; split larger pools into batches")
         }
         // Batch inputs are checked before touching the engine: a blank
-        // target poisons the whole batch (results are positional —
+        // target poisons the whole batch. Results are positional,
         // result[i] answers target[i]), so it fails here with its index
         // instead of somewhere inside the engine's converter. An empty
         // tag is a different mistake: nil means "the default outbound",

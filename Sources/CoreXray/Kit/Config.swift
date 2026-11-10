@@ -19,7 +19,7 @@ public enum XrayConfigSource: Sendable {
 /// it belongs to `XraySession`, the single owner of engine side effects.
 public struct XrayConfig: Sendable {
     /// The configuration as JSON text, ready to hand to a session (or to
-    /// persist, log, or edit between calls).
+    /// persist or edit between calls).
     public var json: String
 
     /// Builds a configuration from raw Xray JSON text. No validation
@@ -49,9 +49,9 @@ public struct XrayConfig: Sendable {
 
     /// Validates this configuration with the engine without starting
     /// anything. The thrown `XrayError` carries the engine's parser
-    /// complaint, which is the cheapest way to reject bad user input.
+    /// complaint. It rejects bad user input without launching.
     /// The check runs inside the engine, so it needs the engine
-    /// stopped — while running, use `validateOffline()` instead. The
+    /// stopped. While running, use `validateOffline()` instead. The
     /// launch-time geo gate also runs first, so a document whose
     /// `geosite:`/`geoip:` files are missing fails here the same way it
     /// would fail at `start`, instead of validating green and then
@@ -73,8 +73,8 @@ public struct XrayConfig: Sendable {
     /// requires. `tag` is intentionally not required: untagged entries
     /// launch fine (the engine invents an identity), and demanding one
     /// would reject documents the engine accepts. This is shape, not
-    /// semantics: unknown protocols, unreachable addresses, and
-    /// contradictory rules still need the engine's own `validate()`.
+    /// semantics. Unknown protocols and bad addresses still need the
+    /// engine's own `validate()`.
     public func validateOffline() throws {
         let decoded: XrayJSONValue
         do {
@@ -88,7 +88,7 @@ public struct XrayConfig: Sendable {
         try Self.checkStructure(of: dict)
     }
 
-    /// The top-level sections the engine parses — pinned to the section
+    /// The top-level sections the engine parses. The list stays pinned to the section
     /// map in the bundled libXray's `infra/conf` loader, not to the
     /// Xray-core HEAD the list may have grown in since. Anything else
     /// is a typo the engine would reject at launch.
@@ -132,7 +132,7 @@ extension Xray {
     /// Unwraps a provider's Age-encrypted subscription export: text
     /// starting with the Age armor header is decrypted with `ageSecret`,
     /// and any other text comes back unchanged. It does not parse links
-    /// and does not base64-decode — the result (whatever it is) goes to
+    /// and does not base64-decode. The result goes to
     /// `XrayConfig(shareLinks:ageSecret:)`, which accepts a single link,
     /// many newline-separated links, or a base64 blob of those. It does
     /// not accept `{"outbounds":[...]}` JSON blobs: the engine's

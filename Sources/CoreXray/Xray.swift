@@ -9,8 +9,8 @@ import Foundation
 /// Entry point for everything the bundled libXray engine can do.
 ///
 /// Grab it via `Xray.shared` and call instance methods (`shared.ping(...)`).
-/// The human-readable API lives in `Kit/` as extensions of this class —
-/// one-shot questions, ports, latency, configs, sessions, geo — while
+/// The readable API lives in `Kit/` as extensions of this class.
+/// It covers one-shot questions, ports, latency, configs, sessions, and geo.
 /// `Calls/` holds the internal engine plumbing those methods delegate to.
 /// When a new upstream capability has no typed wrapper yet,
 /// `sendRawRequest(_:)` is the escape hatch.
@@ -18,7 +18,7 @@ import Foundation
 /// Sessions multiply but the engine does not: you may hold an app-side
 /// session and a provider-side session (or several in tests), yet only
 /// one instance ever runs per process. Starting a second one replaces
-/// the first — every start calls `replaceRunningInstance()` first — so
+/// the first. Every start calls `replaceRunningInstance()` first, so
 /// coordinate ownership in your app instead of assuming isolation. The
 /// same sharing applies to staleness guards: a timed-out start's
 /// background cleanup only stops what it launched, verified by a

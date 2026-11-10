@@ -1,7 +1,7 @@
 import Foundation
 
 // The dns and fakedns sections: where names resolve. Servers accept
-// both forms the engine does — a bare address string (which may carry
+// It accepts both forms the engine accepts. A bare address string (which may carry
 // its own port, as in `"1.1.1.1:53"` or a DoH URL), or an address
 // scoped to domains. Per-server ports beyond the address string, and
 // array-form `hosts` values, are verbatim by design: anything the
@@ -50,9 +50,9 @@ public enum XrayDNSServer: Sendable {
 /// )
 /// ```
 ///
-/// `hosts` maps one name to one address — array-form host values belong
+/// `hosts` maps one name to one address. Array-form host values belong
 /// in raw JSON, which this section never blocks. When the typed section
-/// cannot say something, say it in JSON and pass the document whole.
+/// cannot express something, use JSON and pass the document whole.
 public struct XrayDNS: Sendable {
 
     /// Static overrides: hostname (or `geosite:` category) to IP.
@@ -89,7 +89,7 @@ public struct XrayDNS: Sendable {
 
 /// One `fakedns` pool entry, written verbatim inside the `fakedns` array.
 /// Replaces any fakedns section already in the document. `poolSize` is
-/// the engine's pool length — sized in addresses, not bytes — and must
+/// the engine pool length. It counts addresses, not bytes. It must
 /// fit inside `ipPool`'s range; oversize pools fail at launch, not here,
 /// so size the pool from the CIDR (a /16 holds 65,534 addresses).
 public struct XrayFakeDNS: Sendable {
@@ -119,7 +119,7 @@ extension Xray {
     /// One fake-DNS pool. Traps on a non-positive `poolSize`: that is a
     /// programmer error (an empty pool can never resolve), not a
     /// runtime condition. The CIDR shape of `ipPool` is unchecked until
-    /// launch — a malformed pool fails in the engine, not here.
+    /// launch. A malformed pool fails in the engine, not here.
     public func fakeDNS(ipPool: String, poolSize: Int) -> XrayFakeDNS {
         precondition(poolSize > 0, "fakeDNS poolSize must be positive: it sizes the pool in addresses")
         return XrayFakeDNS(ipPool: ipPool, poolSize: poolSize)

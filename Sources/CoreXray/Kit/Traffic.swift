@@ -3,7 +3,7 @@ import Foundation
 // Live traffic insight without new dependencies: the engine already ships a
 // XrayMetrics HTTP endpoint that publishes per-tag byte counters. Point the
 // assembly at a `metricsPort`, launch, then poll the endpoint with
-// `XrayTrafficMonitor` — speed is the delta between snapshots, totals are the
+// `XrayTrafficMonitor`. Speed is the delta between snapshots, totals are the
 // running sum. Works with the stock engine on every supported OS.
 
 /// The engine's XrayMetrics HTTP service: one object, one localhost listener.
@@ -15,8 +15,8 @@ import Foundation
 /// let config = try assembly.assemble()
 /// ```
 public struct XrayMetrics: Sendable {
-    /// Section tag. Cosmetic to the engine — counters are keyed by
-    /// inbound/outbound tag, not by this — it only labels the section
+    /// Section tag. Cosmetic to the engine. Counters are keyed by
+    /// inbound/outbound tag, not by this. It only labels the section
     /// for readers of the JSON. `options(metricsPort:)` always wires
     /// the default tag; a custom tag travels only when you place the
     /// section yourself (raw JSON or a transform).
@@ -53,7 +53,7 @@ public struct XrayTrafficCounter: Sendable {
     public var total: Int64 { up &+ down }
 
     /// Later minus earlier. If the later reading is smaller, the engine
-    /// restarted between snapshots and "before" is meaningless — so the
+    /// restarted between snapshots and "before" is meaningless. The
     /// whole later reading counts as new traffic instead of clamping to
     /// zero and silently dropping post-restart bytes.
     func delta(since earlier: XrayTrafficCounter) -> XrayTrafficCounter {
@@ -68,13 +68,13 @@ public struct XrayTrafficCounter: Sendable {
 /// section. Every outbound whose tag matches one of the `subjectSelector`
 /// prefixes gets an HTTP probe through itself on the configured interval;
 /// results land in the XrayMetrics endpoint and surface as
-/// `XrayTrafficSnapshot.observatory`. Requires `metricsPort` to be set —
-/// probing without metrics has no readable results.
+/// `XrayTrafficSnapshot.observatory`. Requires `metricsPort` to be set.
+/// Probing without metrics has no readable results.
 ///
 /// The factory rejects an empty selector, a non-http(s) probe URL, and a
 /// malformed Go interval up front. What it cannot check is whether the
 /// selector matches anything: a selector no outbound tag starts with
-/// probes nothing and reports nothing — silently. After launch, confirm
+/// probes nothing and reports nothing, silently. After launch, confirm
 /// your tags appear in the snapshot before trusting an empty delay map.
 ///
 /// ```swift
@@ -86,13 +86,13 @@ public struct XrayTrafficCounter: Sendable {
 public struct XrayObservatory: Sendable {
     /// Tag prefixes to probe. A list ends up as plain prefix matching:
     /// `"fast"` matches `"fast-v1"` and `"fastest"`; the empty string
-    /// matches every outbound — including `direct` and `block` if their
+    /// matches every outbound, including `direct` and `block` if their
     /// tags start the same way, so scope selectors to proxy tags.
     public var subjectSelector: [String]
 
     /// The URL the probe requests. Probed through every selected outbound
-    /// on every interval, so a heavy page here is per-outbound traffic —
-    /// keep it a light endpoint that answers 204.
+    /// on every interval, so a heavy page here is per-outbound traffic.
+    /// Keep it a light endpoint that answers 204.
     public var probeURL: String
 
     /// How often to probe. Go duration syntax: `"30s"`, `"1m"`, `"2h"`.
@@ -191,8 +191,8 @@ public struct XrayTrafficSnapshot: Sendable {
     }
 
     /// Uplink/downlink counted on the outbound side only. The engine
-    /// counts every byte twice — once on the inbound it entered
-    /// through, once on the outbound it left through — so `totalUp` /
+    /// counts every byte twice: once on the inbound it entered
+    /// through, once on the outbound it left through, so `totalUp` /
     /// `totalDown` are 2x the bytes on the wire. Dashboard totals and
     /// speeds want this side: for proxy mode it equals the bytes the
     /// device exchanged with the network.
@@ -213,7 +213,7 @@ public struct XrayTrafficSnapshot: Sendable {
             _ later: [String: XrayTrafficCounter],
             _ before: [String: XrayTrafficCounter]
         ) -> [String: XrayTrafficCounter] {
-            // Union, not just the later keys: a tag dropped on restart
+            // Union of both key sets: a tag dropped on restart
             // still appears (at zero), instead of silently vanishing.
             var out: [String: XrayTrafficCounter] = [:]
             for tag in Set(later.keys).union(before.keys) {
@@ -352,7 +352,7 @@ public struct XrayTrafficMonitor: Sendable {
 
     /// Parses one `/debug/vars` body. Separate from `snapshot` so the
     /// shape is unit-testable without a running engine. The stamp is a
-    /// parameter (defaulting to now) so callers control it — but two
+    /// parameter (defaulting to now) so callers control it. Two
     /// snapshots stamped in the same instant still diff to a zero
     /// interval and silent zero rates, so sub-second polling needs the
     /// real stamps `snapshot()` takes.
@@ -372,12 +372,12 @@ public struct XrayTrafficMonitor: Sendable {
 }
 
 /// Fires `onStall` when engine traffic totals stop advancing for
-/// `stalledAfter`: the bridge answers but nothing moves — dead routing,
-/// a severed path, a wedged engine. Polls `snapshot()` every `interval`
+/// `stalledAfter`. The bridge answers but bytes do not move: dead routing
+/// or a wedged engine. Polls `snapshot()` every `interval`
 /// and latches: one fire per stall episode, reset by any movement. An
 /// idle tunnel reads as stalled, so start the watchdog after first
 /// traffic or set `stalledAfter` generously. `onStall` runs on the
-/// watchdog's task — hop to your queue inside it. Create, `start`, and
+/// watchdog's task. Hop to your queue inside it. Create, `start`, and
 /// `stop` from one serial context.
 public final class XrayTrafficWatchdog: @unchecked Sendable {
     private let monitor: XrayTrafficMonitor
@@ -388,7 +388,7 @@ public final class XrayTrafficWatchdog: @unchecked Sendable {
     private var task: Task<Void, Never>?
     /// Which `start` owns the current loop. `stop` cancels the task but
     /// cannot join it, so an old loop may still be between its checks
-    /// when a new one begins — the epoch lets the loser stand down
+    /// when a new one begins. The epoch lets the loser stand down
     /// instead of double-polling and double-firing.
     private var epoch: Int = 0
 
@@ -433,7 +433,7 @@ public final class XrayTrafficWatchdog: @unchecked Sendable {
     }
 
     /// Begins polling. Restartable: starting again stops the old loop,
-    /// and the old loop exits at its next check via the epoch — the two
+    /// and the old loop exits at its next check via the epoch. The two
     /// never fire together. Polls can briefly overlap (`stop` cannot
     /// abort an in-flight HTTP read), so keep `onStall` idempotent: the
     /// epoch guarantees at most one fire per stall episode.
@@ -470,13 +470,13 @@ public final class XrayTrafficWatchdog: @unchecked Sendable {
             // A failed snapshot counts the same as a stale one: the
             // endpoint answering nothing is the stall, whether the
             // engine died or only its listener did. No baseline, slow
-            // listener startup, and a dead port all converge here — so
+            // listener startup, and a dead port all converge here, so
             // start the watchdog after one manual `snapshot()` or set
             // `stalledAfter` generously.
             if let now = try? await monitor.snapshot() {
                 if let previous = last {
                     // Any movement counts: growth is traffic, a drop is an
-                    // engine restart resetting its counters — fresh traffic,
+                    // engine restart resetting its counters. Fresh traffic,
                     // not a stall. Only exactly-equal totals mean silence.
                     // Saturating sides only: totals wrap nothing anymore.
                     if now.uplink != previous.uplink || now.downlink != previous.downlink {
@@ -520,8 +520,8 @@ extension Xray {
 
 // Saturating sum of counters: clamps at `Int64.max` instead of
 // wrapping. A wrapped total turns negative, which the watchdog reads
-// as a restart (fresh traffic) and a dashboard reads as a drop —
-// saturation keeps the series monotonic so both stay truthful.
+// as a restart (fresh traffic) and a dashboard reads as a drop.
+// Saturation keeps the series monotonic so both stay truthful.
 private func saturatingSum(_ values: [Int64]) -> Int64 {
     values.reduce(0) { total, next in
         let (sum, overflow) = total.addingReportingOverflow(next)
@@ -564,8 +564,8 @@ private struct VarsCounter: Decodable {
 
     init(from decoder: any Decoder) throws {
         // Clamp, don't fail: one counter past Int64.max (or briefly a
-        // non-number mid-rotation) must not kill the whole snapshot —
-        // every other tag still reports. Absent stays zero as before.
+        // non-number mid-rotation) must not kill the whole snapshot.
+        // Every other tag still reports. Absent stays zero as before.
         let container = try decoder.container(keyedBy: CodingKeys.self)
         uplink = (try? container.decodeIfPresent(Int64.self, forKey: .uplink)) ?? 0
         downlink = (try? container.decodeIfPresent(Int64.self, forKey: .downlink)) ?? 0
@@ -609,13 +609,13 @@ private struct VarsProbe: Decodable {
 }
 
 /// Restart-proof data usage for one session. Feed it snapshots from
-/// a `XrayTrafficMonitor` and it accumulates the real user traffic —
-/// outbound-side `uplink`/`downlink` only, never the doubled
+/// a `XrayTrafficMonitor` and it accumulates the real user traffic.
+/// It counts outbound-side `uplink`/`downlink` only, never the doubled
 /// inbound+outbound totals. The first snapshot after a `reset` only
 /// sets the baseline; an engine restart in between reads as fresh
 /// traffic, never a negative spike. Owned by `XraySession` (see
 /// `XraySession.usage`), which resets it on every successful start,
-/// so the numbers always belong to the running session — seed it from
+/// so the numbers always belong to the running session. Seed it from
 /// your own persisted counters only if you want cross-session totals.
 public final class XrayDataUsage: @unchecked Sendable {
     private let lock = NSLock()
@@ -639,9 +639,9 @@ public final class XrayDataUsage: @unchecked Sendable {
         }
     }
 
-    /// Bytes uploaded this session (outbound side — the real number).
+    /// Bytes uploaded this session (outbound side, the real number).
     public var usedUp: Int64 { lock.withLock { up } }
-    /// Bytes downloaded this session (outbound side — the real number).
+    /// Bytes downloaded this session (outbound side, the real number).
     public var usedDown: Int64 { lock.withLock { down } }
     /// `usedUp + usedDown`, saturating instead of trapping.
     public var usedTotal: Int64 {
@@ -666,7 +666,7 @@ public final class XrayDataUsage: @unchecked Sendable {
 // checked here; snapshots, deltas, and usage are read-models from the
 // engine and need no factories.
 extension Xray {
-    /// Builds a metrics section by hand — for raw documents and
+    /// Builds a metrics section by hand, for raw documents and
     /// transforms. The tag labels the section only (the engine keys
     /// counters by inbound/outbound tag); the normal path is
     /// `options(metricsPort:)`, which always wires the default tag.

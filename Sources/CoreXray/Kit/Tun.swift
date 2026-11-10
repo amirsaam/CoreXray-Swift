@@ -1,6 +1,6 @@
 import Foundation
 
-// Device-wide capture through the engine's own TUN inbound — the documented
+// Device-wide capture through the engine TUN inbound. It uses the documented
 // shape the published Xray clients run, not a pump around a SOCKS port.
 // The engine reads packets off a TUN interface: on macOS it creates the
 // interface itself from `name`, while on iOS/Android the interface belongs
@@ -14,7 +14,7 @@ public struct XrayTunEntry: Sendable {
     public var tag: String
 
     /// Kept for the inbound shape only: the engine ignores `listen`
-    /// (and any port) for `protocol: "tun"` — packets arrive on the
+    /// (and any port) for `protocol: "tun"`. Packets arrive on the
     /// interface, not a socket. Defaults to 127.0.0.1.
     public var listen: String
 
@@ -46,7 +46,7 @@ public struct XrayTunEntry: Sendable {
 
     /// Physical interface Xray's own traffic binds to, so it never loops
     /// back into the tunnel. "auto" lets the engine choose. Nil means
-    /// the engine decides — including its own rule that a system
+    /// the engine decides. It includes its own rule that a system
     /// routing table without an explicit interface implies "auto",
     /// which the wire object makes explicit so the document shows what
     /// the engine will do.
@@ -55,7 +55,7 @@ public struct XrayTunEntry: Sendable {
     /// The TUN file descriptor from the app or NetworkExtension that owns
     /// the interface (iOS/Android). Written into the document's `env` as
     /// `xray.tun.fd`. Nil means the engine creates the interface itself
-    /// (the macOS path) — no descriptor needed.
+    /// (the macOS path). No descriptor is needed.
     public var fileDescriptor: Int32?
 
     /// Carried verbatim; nil (the default) leaves the entry without
@@ -113,7 +113,7 @@ public struct XrayTunEntry: Sendable {
             // Xray-core's infra/conf/tun.go): a routing table without an
             // explicit interface implies "auto", so the wire says what
             // the engine would do anyway. Without a table the engine
-            // leaves the key unset — and forcing "auto" there breaks
+            // leaves the key unset. Forcing "auto" there breaks
             // descriptor hand-off, so this does not.
             settings["autoOutboundsInterface"] = .string("auto")
         }
@@ -136,7 +136,7 @@ public struct XrayTunEntry: Sendable {
     /// opposite of the merge rule every other stage follows. Pure
     /// document work: without a descriptor nothing is written and
     /// nothing is cleared. Clearing a stale descriptor left in the
-    /// process by an earlier TUN session happens at launch, not here — the engine
+    /// process by an earlier TUN session happens at launch, not here. The engine
     /// applies document `env` into its process at start and never
     /// unsets, so a stale descriptor would hijack the next fd-less
     /// launch into reading a dead fd instead of creating its own
@@ -202,15 +202,15 @@ extension Xray {
     /// Reads the file descriptor of the utun interface backing a packet
     /// tunnel provider's flow, for handing to `tun(fileDescriptor:)`. The
     /// flow object hides it, so this walks the same key path the community
-    /// has used for years — verified per iOS release, never assumed. Each
+    /// has used for years. It is verified per iOS release, never assumed. Each
     /// hop is capability-checked first, so a renamed key throws
     /// `.invalidInput` instead of tripping an Objective-C exception.
-    /// There is no public API for this value — NetworkExtension simply
-    /// does not expose the descriptor — so private key-value access is
-    /// the only route, and a future OS or review pass could object to
+    /// There is no public API for this value. NetworkExtension
+    /// does not expose the descriptor. Private key-value access is
+    /// the only route, and a future OS or review pass can reject
     /// it: keep the call isolated here and re-verify every release. The
-    /// public-API alternative — scanning fds 0…1024 with
-    /// `getsockopt(..., UTUN_OPT_IFNAME)` — was deliberately not chosen:
+    /// public-API alternative (scanning fds 0…1024 with
+    /// `getsockopt(..., UTUN_OPT_IFNAME)`) was deliberately not chosen:
     /// it fires a thousand syscalls per launch and races with concurrent
     /// fd churn elsewhere in the process. One guarded read is steadier.
     public func providerFileDescriptor(from packetFlow: NSObject) throws -> Int32 {

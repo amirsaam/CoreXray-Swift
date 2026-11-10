@@ -1,6 +1,6 @@
 import Foundation
 
-/// The `XraySession` surface, for apps that inject a mock in their own tests.
+/// The `XraySession` API, for apps that inject a mock in tests.
 /// `Xray.shared.newSession()` returns the real thing; declare
 /// dependencies as this protocol and substitute a fake. Defaulted
 /// arguments live on the extension below, so mocks only implement the

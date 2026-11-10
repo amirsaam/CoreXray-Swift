@@ -1,7 +1,7 @@
 import Foundation
 
 // Age key generation for encrypted subscription feeds. One call, no
-// validation needed — the friendly layer (`Kit/Keys.swift`) only names it.
+// validation is needed. The Kit layer (`Kit/Keys.swift`) only names it.
 
 internal final class KeyCalls {
     /// Never instantiated: all members are static.

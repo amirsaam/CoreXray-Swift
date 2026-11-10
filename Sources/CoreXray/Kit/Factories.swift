@@ -1,8 +1,8 @@
 import Foundation
 
-// Friendly starting points on the shared instance: create the objects an app
-// holds onto without spelling out their constructors or the engine pipeline
-// underneath. Everything here returns before touching the engine except
+// Starting points on the shared instance. They create the objects an app
+// holds onto without spelling out constructors or the engine pipeline.
+// Everything here returns before touching the engine except
 // `validate`, which only checks.
 
 extension Xray {
@@ -18,8 +18,8 @@ extension Xray {
     }
 
     /// Builds a runnable configuration from JSON text or share links, with
-    /// the session defaults applied — no session needed when all you want is
-    /// the document (persist it, diff it, hand it over later).
+    /// the session defaults applied. No session is needed when you only want
+    /// the document. Persist it for later use.
     public func configuration(
         _ source: XrayConfigSource,
         options: XraySessionOptions? = nil
@@ -28,8 +28,8 @@ extension Xray {
     }
 
     /// Checks a source the way `start` would, without starting anything.
-    /// Throws the engine's parser complaint, which is the cheapest way to
-    /// reject bad user input.
+    /// Throws the engine's parser complaint. It rejects bad user input
+    /// without launching.
     public func validate(
         _ source: XrayConfigSource,
         options: XraySessionOptions? = nil
@@ -41,8 +41,8 @@ extension Xray {
     /// outbound object. The one-call path from intent to a runnable
     /// document (conversion/wrapping, entries, sections, patches
     /// applied). Tune the result through the returned assembly before
-    /// calling `assemble()` on it. Full documents are not accepted —
-    /// those go through `configuration(.json(...))`.
+    /// calling `assemble()` on it. Full documents are rejected.
+    /// Pass those through `configuration(.json(...))`.
     public func assembler(_ source: XrayAssemblySource) -> XrayAssembly {
         XrayAssembly(source: source)
     }
@@ -52,8 +52,8 @@ extension Xray {
     /// struct construction. A socks inbound on `socksPort` is included by default (matching the native
     /// apps); pass nil to leave it out, or a port for an HTTP inbound via
     /// `httpPort`. The DNS relay ships by default (local queries need a
-    /// door); pass `dnsRelay: false` to drop it. Anything fancier — TUN,
-    /// observatory, patches — still goes through `assembler(_:)`.
+    /// door); pass `dnsRelay: false` to drop it. For TUN,
+    /// observatory, or patches, use `assembler(_:)`.
     public func proxyConfiguration(
         _ source: XrayAssemblySource,
         remarks: String? = nil,

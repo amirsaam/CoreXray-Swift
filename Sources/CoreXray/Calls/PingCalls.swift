@@ -1,7 +1,7 @@
 import Foundation
 
 // Latency measurement through the engine. Stopped-engine precondition and
-// argument validation live in the friendly layer (`Kit/Ping.swift`); this
+// argument validation live in the Kit layer (`Kit/Ping.swift`); this
 // only encodes the task and decodes the answers.
 
 internal final class PingCalls {
@@ -63,7 +63,7 @@ internal final class PingCalls {
             do {
                 data = try encoder.encode(element)
             } catch {
-                // `XrayJSONValue` encodes by construction — a failure here
+                // `XrayJSONValue` encodes by construction. A failure here
                 // names our side, not the engine's.
                 return XrayPingResult(
                     succeeded: false,
@@ -84,7 +84,7 @@ internal final class PingCalls {
                 failureReason: "client fallback — the engine answered with an undecodable measurement"
             )
         }
-        // Zero parseable out of N is not N dead servers — it is a schema
+        // Zero parseable out of N signals a schema
         // the client no longer reads. Synthesizing failures would report
         // live servers as down; throw with both causes instead.
         guard parsedAny else {

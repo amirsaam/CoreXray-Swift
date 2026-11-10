@@ -1,9 +1,9 @@
-# 06 — Ping: one config, or all of them, through the real path
+# 06. Ping: one config, or all of them, through the real path
 
-One-shot latency through the engine's own measurement — a real request
-through the real outbound, not ICMP. Two hard rules: the engine must be
-STOPPED (measurement runs an isolated instance; the bridge refuses
-otherwise), and at most 5 targets per call.
+One-shot latency comes from the engine's own measurement. It sends a real
+request through the real outbound, not ICMP. Two hard rules apply. The
+engine must be STOPPED. Measurement runs an isolated instance, and the
+bridge refuses otherwise. Each call takes at most 5 targets.
 
 ## Pinging one config
 
@@ -14,7 +14,7 @@ otherwise), and at most 5 targets per call.
 let json = try engine.configuration(.shareLinks(oneLink)).json
 let target = engine.pingTarget(config: json)
 
-// Timeout is validated in the factory — a bad value fails before the
+// Timeout is validated in the factory. A bad value fails before the
 // engine is even stopped. testURL must be absolute HTTP(S).
 let options = try engine.pingOptions(
     timeoutSeconds: 10,
@@ -25,13 +25,13 @@ let options = try engine.pingOptions(
 let results = try engine.ping([target], options: options)
 let ms = results[0]
 ms.succeeded             // Bool
-ms.latencyMilliseconds   // Int64 — 0 on failure, never a sentinel
-ms.failureReason         // String? — the engine's text, nil on success
+ms.latencyMilliseconds   // Int64. 0 on failure, never a sentinel
+ms.failureReason         // String?. The engine's text, nil on success
 ```
 
 Failed measurements normalize to `0` with a reason. The engine's internal
-sentinels (`10000` / `11000`) never leak into your UI — if you see one,
-it is a package bug, report it.
+sentinels (`10000` / `11000`) never leak into your UI. If you see one,
+it is a package bug. Report it.
 
 ## Pinging all configs (the server-list flow)
 
@@ -58,17 +58,16 @@ let ranked: [(link: String, ms: Int64)] = try stride(
 ```
 
 Cache the ranking per link and connect the winner (02). Re-ping on
-network change, not on a timer — every run costs real requests through
+network change, not on a timer. Every run costs real requests through
 every measured server.
 
 ## While connected: don't ping, read the observatory
 
 `ping` refuses while running, by bridge design. The running-state
-equivalent is the `observatory` section (03-Step 4): it probes the
-outbounds IN the running config on an interval and its answers ride
-along in every traffic snapshot. Architecture, in one line: ping the
-candidates while idle, connect the winner, watch the observatory while
-connected.
+equivalent is the `observatory` section (03, Step 4). It probes the
+outbounds in the running config on an interval, and its answers ride
+along in every traffic snapshot. The pattern: ping the candidates while
+idle, connect the winner, and watch the observatory while connected.
 
 ## Rules that throw (all before the engine is touched)
 

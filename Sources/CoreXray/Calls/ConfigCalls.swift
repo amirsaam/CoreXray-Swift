@@ -2,8 +2,8 @@ import Foundation
 
 // Share-link conversion both ways, config validation, and subscription
 // unwrapping. Entries the engine cannot build are dropped inside the engine;
-// the "no valid outbound" failure surfaces as `.engineFailed` here and is
-// reworded by the friendly layer.
+// the "no valid outbound" failure is reported as `.engineFailed` here and is
+// reworded by the Kit layer.
 
 internal final class ConfigCalls {
     /// Never instantiated: all members are static.
@@ -45,7 +45,7 @@ internal final class ConfigCalls {
 
     internal static func decodeText(_ text: String, ageSecret: String?) throws -> String {
         // Pasted subscriptions carry stray newlines; the engine detects
-        // Age armor by its header, so trim first — a base64 blob loses
+        // Age armor is detected by its header. Trim first. A base64 blob loses
         // nothing, and armor detection stops depending on paste hygiene.
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return try EngineTransport.ask(

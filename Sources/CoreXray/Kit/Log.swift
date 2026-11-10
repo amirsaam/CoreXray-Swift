@@ -19,7 +19,7 @@ public enum XrayLogLevel: String, Sendable {
 ///
 /// Log paths are the session's forensics: point them at files and
 /// `recentEngineLogs(kind:lines:)` tails them in place. The engine
-/// appends without rotating — in a long-lived provider, point the paths
+/// appends without rotating. In a long-lived provider, point the paths
 /// at the shared container and rotate them from the app side (size-cap
 /// and rename on launch), or the files grow without bound.
 public struct XrayLog: Sendable {

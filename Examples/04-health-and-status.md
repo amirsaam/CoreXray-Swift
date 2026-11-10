@@ -1,16 +1,16 @@
-# 04 — Checking core status: running, version, health, forensics
+# 04. Checking core status: running, version, health, forensics
 
-Four questions, four calls, each with a different price. Use the cheapest
-one that answers what you asked.
+Four questions, four calls. Each call costs a different amount. Use the
+cheapest one that answers what you asked.
 
-## `isRunning()` — is anything up?
+## `isRunning()`. Is anything up?
 
 ```swift
 // Asks the engine itself, not a cached flag. Cheap; poll freely.
 if try session.isRunning() { /* show Disconnect */ }
 ```
 
-## `version()` — which engine build is this?
+## `version()`. Which engine build is this?
 
 ```swift
 // Answers e.g. "26.10.31": the Xray-core compiled into the framework.
@@ -18,7 +18,7 @@ if try session.isRunning() { /* show Disconnect */ }
 let v = try engine.version()
 ```
 
-## `health()` — is it up AND answering?
+## `health()`. Is it up and answering?
 
 ```swift
 // false when idle; true when an instance is up and the bridge round-trips;
@@ -33,10 +33,10 @@ Timer.publish(every: 5, on: .main, in: .common).autoconnect().sink { _ in
 }
 ```
 
-`isRunning` asks state; `health` proves liveness. The status dot wants
-`health`; the button label is fine with `isRunning`.
+`isRunning` reports state. `health` proves liveness. Drive the status dot
+from `health`. The button label can use `isRunning`.
 
-## `connectedSince` — how long has THIS instance been up?
+## `connectedSince`. How long has this instance been up?
 
 ```swift
 // Stamped on every successful launch path, cleared on stop().
@@ -55,25 +55,25 @@ session.recentLogs()
 
 // The engine's own log files, tailed. `error` (default) or `access`,
 // last N lines. Throws .invalidInput naming the file when the document
-// never named one — the assembler must set log paths for this to read.
+// never named one. The assembler must set log paths for this to read.
 try session.recentEngineLogs(.error, lines: 100)
 ```
 
-After an unexpected drop: `connectedSince == nil` + the error tail is the
-whole "why did it disconnect" screen. Full logging setup in
+After an unexpected drop, `connectedSince == nil` plus the error tail make
+up the "why did it disconnect" screen. Full logging setup is in
 `05-logging.md`.
 
-## Preflight — will this config survive the provider?
+## Preflight. Will this config survive the provider?
 
 ```swift
-// Values, not throws-one-at-a-time: every provider problem listed —
-// non-loopback inbound, missing tun, missing descriptor — as strings
+// Values, not throws-one-at-a-time: every provider problem listed:
+// non-loopback inbound, missing tun, missing descriptor, as strings
 // for UI, or the throwing form for a gate.
 let issues = try session.preflightIssues(.json(config.json), options: opts)
 guard issues.isEmpty else { showProblems(issues); return }
 try session.preflightForProvider(.json(config.json), options: opts)
 ```
 
-Run before every provider launch (07). The two provider killers —
-a missing descriptor and a non-loopback listen — become checklist items
-instead of crashes.
+Run before every provider launch (07). The two provider killers are
+a missing descriptor and a non-loopback listen. They come back as checklist
+items instead of crashes.

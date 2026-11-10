@@ -21,7 +21,7 @@ public enum XrayError: Swift.Error, LocalizedError, Sendable {
     case timedOut(String)
 
     /// A geo database a configuration depends on (`geosite:` / `geoip:`
-    /// references) is missing, empty, or unreadable where the engine will
+    /// references) is not readable where the engine will
     /// look for it. The message names every file that was searched.
     case geoAssets(String)
 
@@ -37,7 +37,7 @@ public enum XrayError: Swift.Error, LocalizedError, Sendable {
     }
 
     /// What to do about it, in one line. The message says what happened;
-    /// this says where to look next — including when the failure names
+    /// this says where to look next. When the failure names
     /// a step (fetch, metrics, log tail, envelope), which means the step
     /// broke, not the operation around it.
     public var recoveryHint: String? {

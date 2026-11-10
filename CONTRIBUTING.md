@@ -1,12 +1,12 @@
 # Contributing to CoreXray-Swift
 
 This file is for maintainers and contributors. If you just use the package,
-you never need anything in here — see `README.md` and `Examples/`.
+you never need anything in here. See `README.md` and `Examples/`.
 
 ## Ground rules
 
-- CI must be green: `swift build` with zero warnings plus the full `swift test`
-  suite, on every push and PR, plus the iOS Simulator availability build.
+- CI must be green. Every push and PR runs `swift build` with zero warnings,
+  the full `swift test` suite, and the iOS Simulator availability build.
 - Clean-break versioning: no `@available` shims, no deprecated aliases. A
   rename removes the old name; consumers pin with `.upToNextMinor` so Swift
   patches flow without surprises.
@@ -21,7 +21,7 @@ How a new core reaches consumers:
 1. A nightly check compares the core pinned in `Package.swift` with
    XTLS/libXray's latest release. When upstream moved, it opens a PR from a
    `core/v<version>` branch that changes exactly two manifest lines (url +
-   checksum) and pastes upstream's release notes into the PR body — libXray
+   checksum) and pastes upstream's release notes into the PR body. libXray
    itself ships no notes, so they come from the matching Xray-core release,
    stripped of sponsor/donation boilerplate, auto-translated to English with
    the original collapsed below (translation is best-effort; if it fails the
@@ -32,11 +32,11 @@ How a new core reaches consumers:
 3. If the Swift layer needs changes, commit them onto the branch; if not,
    merge as-is.
 4. Merging changes nothing for consumers. No tag, no release, no automation
-   past the merge — a PR is a pin update, never a release.
+   past the merge. A PR is a pin update, never a release.
 
-Cutting a release (maintainer): pick the numbers — the epoch from the pinned
-core (`26.11.9` → `261109`), the Swift major/minor unchanged unless the
-Swift code changed since the last tag — then push the tag:
+Cutting a release (maintainer): pick the numbers. Take the epoch from the pinned
+core (`26.11.9` → `261109`), keep the Swift major/minor unchanged unless the
+Swift code changed since the last tag, then push the tag:
 
 ```bash
 git tag 261109.1.1
@@ -44,22 +44,19 @@ git push origin 261109.1.1
 ```
 
 The push drafts the release for you (`Draft release notes` workflow): a
-**draft** named `v261109.1.1` in the house format — bold title, Core/Swift
+**draft** named `v261109.1.1` in the house format. It has a bold title, Core/Swift
 lines, `NEW` / `CHANGES` / `FIXES` pre-filled with the "contains no …"
 lines, and a Full Changelog compare link. Fill the three sections, then
 publish the draft by hand. The workflow never publishes anything itself;
 if the release already exists it does nothing, so re-pushing a tag is
 safe.
 
-Tag pushes run the CI suite on the tag, so a red commit is still caught —
-delete the tag and release if that happens and re-cut. The release name
+Tag pushes run the CI suite on the tag, so a red commit is still caught. Delete the tag and release if that happens and re-cut. The release name
 keeps the `v` prefix (`v261031.1.0`); the tag itself is bare.
 
 A Swift-only release (same core) skips the PR flow entirely: push the Swift
-changes, then tag `<same-epoch>.<major>.<minor+1>` — or `<major+1>.0` for a
-breaking reshape. Yes, it really is that simple: the PR moves the pin, the
-tag freezes it, the release names it. Three separate human-visible steps,
-nothing hidden.
+changes, then tag `<same-epoch>.<major>.<minor+1>`, or `<major+1>.0` for a
+breaking reshape. The PR moves the pin. The tag freezes it. The release names it.
 
 You can also trigger the check from the Actions tab with workflow_dispatch
 if you want the newest engine before the next midnight.
@@ -96,7 +93,7 @@ Sources/CoreXray/             typed API over the C bridge
     Factories.swift          newSession, configuration, validate, assembler,
                              proxyConfiguration, shared port validation
   Calls/                     internal engine plumbing, one class per file
-    EngineTransport.swift    serial lane, request guard, envelopes — the only
+    EngineTransport.swift    serial lane, request guard, envelopes. The only
                              file that touches the C bridge
     LifecycleCalls.swift     version/state/launch/stop/raw wire calls
     PortCalls.swift          spare-port query plus the TCP bind check

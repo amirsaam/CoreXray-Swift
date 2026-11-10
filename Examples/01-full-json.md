@@ -1,10 +1,11 @@
-# 01 — Running the core from full JSON
+# 01. Running the core from full JSON
 
-When you already own a complete Xray configuration document — exported
-from another client, generated server-side, or hand-written — skip the
-assembler entirely. The session starts any full document as-is.
+When you already own a complete Xray configuration document, skip the
+assembler entirely. This covers documents exported from another client,
+generated server-side, or hand-written. The session starts any full
+document as-is.
 
-## Step 1 — Hold a session
+## Step 1. Hold a session
 
 ```swift
 import CoreXray
@@ -16,17 +17,17 @@ let engine = Xray.shared
 let session = engine.newSession { print("[xray]", $0) }
 ```
 
-## Step 2 — Load the document
+## Step 2. Load the document
 
 ```swift
 // From text you already hold (paste box, keychain, app-group file):
 let config = try engine.configuration(.json(savedText))
 
-// From disk — the file is read and capped at the engine's 16 MiB limit:
+// From disk. The file is read and capped at the engine's 16 MiB limit:
 let fromDisk = try engine.configuration(.json(try String(contentsOf: url)))
 
 // Edit the document without leaving Swift: parse to the typed tree,
-// mutate, serialize back. No casts, no `Any` — literals build, the
+// mutate, serialize back. No casts, no `Any`. Literals build, the
 // subscript and dynamic members read.
 var tree = try JSONDecoder().decode(XrayJSONValue.self, from: Data(config.json.utf8))
 tree["log"]?["loglevel"] = "error"
@@ -36,9 +37,9 @@ let quieter = try engine.configuration(.json(edited))
 ```
 
 `configuration(.json(_))` stores text untouched. It parses nothing and
-launches nothing — that is what the next step is for.
+launches nothing. Validation and launch happen in the steps below.
 
-## Step 3 — Validate before launching
+## Step 3. Validate before launching
 
 ```swift
 // Full engine check. Needs the engine STOPPED; throws the engine's own
@@ -50,13 +51,13 @@ try config.validate()
 try config.validateOffline()
 ```
 
-## Step 4 — Launch
+## Step 4. Launch
 
 ```swift
 // The document, exactly as given:
 try session.start(config)
 
-// Equivalent shortcuts — same pipeline, less ceremony:
+// Equivalent shortcuts. Same pipeline, less ceremony:
 try session.start(.json(savedText))          // source form
 try session.start(rawJSON: savedText)        // text form
 try session.start(contentsOf: url)           // file form (16 MiB cap)
@@ -72,20 +73,20 @@ try session.start(
 )
 ```
 
-Async and bounded variants exist for UI and provider code — see
+Async and bounded variants exist for UI and provider code. See
 `04-health-and-status.md` and `Examples/07-network-extension.md`. Never
-call the sync forms on the main thread; the bridge call blocks until the
+call the sync forms on the main thread. The bridge call blocks until the
 engine answers.
 
-## Step 5 — Stop
+## Step 5. Stop
 
 ```swift
 try session.stop()              // safe when idle; clears the instance
-session.connectedSince          // nil again — your "disconnected" label
+session.connectedSince          // nil again. Your "disconnected" label
 ```
 
 `stop()` keeps the last run's engine log tail on disk for the "why did it
-drop" screen — see `05-logging.md`. Starting again replaces; there is no
+drop" screen. See `05-logging.md`. Starting again replaces the instance, so there is no
 second instance to clean up.
 
 ## Rules that throw

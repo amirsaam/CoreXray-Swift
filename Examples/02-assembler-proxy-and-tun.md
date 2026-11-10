@@ -1,17 +1,19 @@
-# 02 — Assembling documents: proxy mode and TUN mode
+# 02. Assembling documents: proxy mode and TUN mode
 
-The assembler turns a server description into a launchable document:
-local entries, routing, DNS, logging, standards — no tag bookkeeping.
-It accepts exactly two inputs (never a full document; that is `01`):
+The assembler turns a server description into a launchable document. It
+writes local entries, routing, DNS, logging, and standards, and handles
+tag bookkeeping.
+It accepts exactly two inputs, never a full document. For full documents,
+see `01`:
 
-- `.shareLinks(_)` — `vless://` / `trojan://` / `ss://` / `socks://`,
-  one link, many newline-separated, or a base64 blob of those.
-- `.outboundJson(_)` — one outbound object
-  (`{"protocol": ..., "tag": ..., ...}`), wrapped as the outbounds.
+- `.shareLinks(_)` takes `vless://`, `trojan://`, `ss://`, or `socks://`.
+  Pass one link, many newline-separated links, or a base64 blob of those.
+- `.outboundJson(_)` takes one outbound object
+  (`{"protocol": ..., "tag": ..., ...}`). The assembler wraps it as the outbounds.
 
 The first outbound is the `.proxy` destination everywhere.
 
-## Part A — Proxy mode (local SOCKS/HTTP entries)
+## Part A. Proxy mode (local SOCKS/HTTP entries)
 
 ```swift
 import CoreXray
@@ -58,7 +60,8 @@ let config = try a.assemble()
 try session.start(config)
 ```
 
-One call when you need no tuning — same pipeline, defaults for entries:
+One call covers the no-tuning case. It runs the same pipeline with defaults
+for entries:
 
 ```swift
 let config = try engine.proxyConfiguration(
@@ -73,7 +76,7 @@ let config = try engine.proxyConfiguration(
 try session.start(config)
 ```
 
-## Part B — TUN mode (all-device traffic via a handed-off fd)
+## Part B. TUN mode (all-device traffic via a handed-off fd)
 
 ```swift
 // The descriptor comes from the packet flow (07-network-extension.md).
@@ -103,13 +106,13 @@ guard issues.isEmpty else { throw ProviderError.misconfigured(issues) }
 try await session.start(config, options: opts, deadline: 20)
 ```
 
-Notes that bite in production:
+Notes for production:
 
 - `autoOutboundsInterface: "auto"` is emitted only when a routing table
-  is set without an explicit interface — pass `autoSystemRoutingTable`
-  and you get the self-routing-loop protection for free.
+  is set without an explicit interface. Pass `autoSystemRoutingTable`
+  and you get the self-routing-loop protection.
 - Launching a descriptor-less TUN document clears stale `xray.tun.fd` from
-  the process (assembling alone never touches process state), because
-  the engine applies `env` but never unsets it.
-- `patch` runs after everything, including the TUN env merge — inspect
+  the process. Assembling alone never touches process state. The engine
+  applies `env` but never unsets it.
+- `patch` runs after everything, including the TUN env merge. Inspect
   `config.json` when a key you set seems to vanish.

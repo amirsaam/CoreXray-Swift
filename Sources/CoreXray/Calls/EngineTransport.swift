@@ -23,8 +23,8 @@ internal final class EngineTransport {
     /// Serializes every byte that crosses the C boundary. The engine is
     /// process-global, so all traffic shares one lane: no two calls
     /// interleave inside `CGoInvoke`, and callers need no locking of their
-    /// own. Every call here blocks its caller's thread while queued —
-    /// including long `ping` and launch calls — so never run a package
+    /// own. Every call here blocks its caller thread while queued.
+    /// Long `ping` and launch calls block too. Never run a package
     /// call on the main thread, and never call back into the engine from
     /// `transform` or `logger` closures: the lane does not re-enter, and
     /// a callback that calls in wedges its own thread until the outer
@@ -41,15 +41,15 @@ internal final class EngineTransport {
     }
 
     /// Lowest-level call: everything above goes through the serial lane.
-    /// Size-checked here, so the check covers the final envelope text,
-    /// not just a payload fragment. A missing engine answer throws
+    /// Size-checked here. The check covers the final envelope text with framing.
+    /// A missing engine answer throws
     /// `.bridgeFailed` outright instead of a fabricated failure envelope,
     /// so a dead bridge can never look like an engine verdict.
     /// `CGoInvoke` takes a NUL-terminated copy of the UTF-8 bytes and the
     /// answer comes back the same way (`String(cString:)`): a response
     /// that is not valid UTF-8 traps at the boundary rather than
     /// producing a mojibake string, and a bridge that returns an
-    /// unterminated pointer would over-read — both are engine-side
+    /// unterminated pointer would over-read. Both are engine-side
     /// invariants this layer trusts, since every bundled binary has held
     /// them. If `CGoInvoke` itself wedges, the lane wedges with it: every
     /// later call queues behind it forever. `health()` detects this state
@@ -100,7 +100,7 @@ internal final class EngineTransport {
     /// is kept in the message: "unreadable" alone never says which key
     /// broke shape. Depth-checked first: the payload decodes
     /// recursively, so a hostile nesting depth (a thousand open braces
-    /// in a row) would exhaust the stack — an uncatchable crash no
+    /// in a row) would exhaust the stack. That crash is uncatchable. No
     /// error type can report. Legitimate engine answers nest a dozen
     /// deep at most; anything past 128 is an attack or corruption, and
     /// is rejected before decoding starts.
@@ -183,7 +183,7 @@ internal final class EngineTransport {
     /// The `data` body decodes as an optional value the caller
     /// discards: the Go side has answered success with missing, null,
     /// object, and scalar `data` across versions, and a scalar body is
-    /// still a successful operation — so only `success`/`error` decide,
+    /// still a successful operation. Only `success`/`error` decide,
     /// and no body shape can fail the call.
     internal static func acknowledge(_ method: Xray.Method) throws {
         try resolvedStatus(envelope: envelope(of: try send(method), as: XrayJSONValue?.self))
@@ -207,7 +207,7 @@ internal final class EngineTransport {
     /// Serializes a JSON tree to compact text, keys sorted so two builds of
     /// the same intent diff cleanly. `XrayJSONValue` is always encodable
     /// when read from a document, but transform closures can inject
-    /// foreign values — either way the value never reached the engine,
+    /// foreign values. Either way the value never reached the engine,
     /// so a failure here is `invalidInput`, not a bridge failure.
     internal static func serialize(_ value: XrayJSONValue) throws -> String {
         do {

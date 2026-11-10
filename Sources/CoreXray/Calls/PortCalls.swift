@@ -6,7 +6,7 @@ import Glibc
 #endif
 
 // Port discovery: the engine's candidate list, plus the local bind check that
-// closes the check-then-use hole. The friendly layer (`Kit/Ports.swift`)
+// closes the check-then-use hole. The Kit layer (`Kit/Ports.swift`)
 // validates input; everything here assumes sane arguments.
 
 internal final class PortCalls {
@@ -15,8 +15,8 @@ internal final class PortCalls {
 
     internal static func spare(count: Int, excluding: [Int]) throws -> [Int] {
         // Strict about shape, lenient about count: a missing list is a
-        // broken answer, but `verify` legitimately asks for remainders —
-        // and an answer with fewer ports than asked just yields fewer.
+        // broken answer. But `verify` legitimately asks for remainders,
+        // and an answer with fewer ports than asked yields fewer.
         let ports = try EngineTransport.ask(
             .sparePorts,
             payload: Xray.PortRequest(count: count, excluding: excluding),
@@ -49,7 +49,7 @@ internal final class PortCalls {
                 excluded.append(port)
                 // One probe per family: TCP first (the listener the
                 // package itself opens), then UDP (engine inbounds
-                // listen on UDP by default). A refusal names itself —
+                // listen on UDP by default). A refusal names itself.
                 // EACCES is privileges, anything else is in use.
                 if let failure = bindErrno(for: port, udp: false) ?? bindErrno(for: port, udp: true) {
                     if failure == EACCES { sawPrivileged = true }
@@ -66,7 +66,7 @@ internal final class PortCalls {
     }
 
     /// True when nothing on this machine is listening on `port` for
-    /// 127.0.0.1 TCP — a best-effort check at call time, not a reservation.
+    /// 127.0.0.1 TCP. This is a best-effort check at call time, not a reservation.
     internal static func canBindTCPPort(_ port: Int) -> Bool {
         bindErrno(for: port, udp: false) == nil
     }
@@ -79,7 +79,7 @@ internal final class PortCalls {
     }
 
     /// The raw bind probe: nil means the port bound (and was released),
-    /// otherwise the errno. UDP probes skip `SO_REUSEADDR` — the engine
+    /// otherwise the errno. UDP probes skip `SO_REUSEADDR`. The engine
     /// binds raw, so the check must too. Wildcard and IPv6 listeners are
     /// out of scope: this only sees 127.0.0.1, which the probe, and the
     /// package's own listeners, all use.

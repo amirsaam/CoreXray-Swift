@@ -17,17 +17,17 @@ import Foundation
 /// `.int` (only fractions become `.double`), and `doubleValue` reads
 /// an `.int` back as a `Double` so thresholds compare without casting.
 /// A whole double like `1.0` therefore decodes as `.int(1)` and
-/// re-encodes as `1` — a representation change only; the engine parses
+/// re-encodes as `1`. Only the representation changes. The engine parses
 /// sections by value, never by spelling. A non-finite `.double`
 /// (`.nan`, `.infinity`) has no JSON spelling, so encoding one throws
 /// `.invalidInput` (a value that cannot travel, not a bridge failure).
-/// Very large numbers saturate instead of trapping: ints above
+/// Large numbers saturate instead of trapping: ints above
 /// `.int`'s range decode as an approximating `.double`, so
 /// pass-through of huge values is lossy by design. Nesting decodes
-/// recursively — hostile depth (thousands of levels) overflows the
+/// recursively. Hostile depth (thousands of levels) overflows the
 /// stack instead of failing cleanly, so treat document depth as a trust
 /// boundary on untrusted input. Object key order is
-/// not preserved — Swift dictionaries have none,
+/// not preserved. Swift dictionaries have no order,
 /// and the engine parses sections by name, so never depend on it.
 @dynamicMemberLookup
 public enum XrayJSONValue: Codable, Sendable, Hashable {
