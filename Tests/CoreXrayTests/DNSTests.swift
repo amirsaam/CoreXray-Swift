@@ -44,7 +44,7 @@ final class DNSTests: XCTestCase {
             log: XrayLog(level: .warning, dnsLog: true)
         ))
         let value = try JSONDecoder().decode(XrayJSONValue.self, from: Data(config.json.utf8))
-        XCTAssertEqual(value["log"]?["loglevel"], .string("warning"))
+        XCTAssertEqual(value["log"]?["logLevel"], .string("warning"))
         XCTAssertEqual(value["log"]?["dnsLog"], .bool(true))
         XCTAssertNil(value["log"]?["access"])
     }

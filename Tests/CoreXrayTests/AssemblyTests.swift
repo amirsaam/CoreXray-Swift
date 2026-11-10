@@ -51,7 +51,7 @@ final class AssemblyTests: XCTestCase {
         XCTAssertEqual(value["inbounds"]?[1]?["protocol"], .string("dokodemo-door"))
         // Typed sections land verbatim.
         XCTAssertEqual(value["dns"]?["queryStrategy"], .string("UseIPv4"))
-        XCTAssertEqual(value["log"]?["loglevel"], .string("warning"))
+        XCTAssertEqual(value["log"]?["logLevel"], .string("warning"))
         XCTAssertEqual(value["remarks"], .string("demo"))
 
         try config.validate()

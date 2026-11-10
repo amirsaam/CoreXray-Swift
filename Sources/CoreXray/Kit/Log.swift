@@ -44,7 +44,7 @@ public struct XrayLog: Sendable {
     var wireObject: XrayJSONObject {
         var section: XrayJSONObject = [:]
         if let level {
-            section["loglevel"] = .string(level.rawValue)
+            section["logLevel"] = .string(level.rawValue)
         }
         if let access {
             section["access"] = .string(access)
