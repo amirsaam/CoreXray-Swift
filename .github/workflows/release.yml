@@ -20,8 +20,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-tags: true
 
       - name: Create draft release from the tag
         env:
@@ -29,6 +27,10 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
+          # Tags are not fetched by the shallow checkout above; pull them
+          # in for previous-tag detection. (fetch-tags on the checkout
+          # step itself collides with tag-triggered refspecs.)
+          git fetch origin --tags --force --quiet
           if gh release view "${TAG}" >/dev/null 2>&1; then
             echo "Release ${TAG} already exists; nothing to do."
             exit 0
